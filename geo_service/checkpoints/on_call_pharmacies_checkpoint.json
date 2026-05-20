@@ -1,0 +1,10 @@
+{
+  "category": "on_call_pharmacies",
+  "timestamp": "2026-03-14T10:14:25.458496",
+  "places_count": 898,
+  "stats": {
+    "api_calls": 1010,
+    "governorates": 24,
+    "duration": "0:22:53.627972"
+  }
+}

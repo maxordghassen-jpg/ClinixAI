@@ -1,0 +1,10 @@
+{
+  "category": "night_pharmacies",
+  "timestamp": "2026-03-14T10:34:52.959224",
+  "places_count": 1015,
+  "stats": {
+    "api_calls": 1149,
+    "governorates": 24,
+    "duration": "0:20:19.748784"
+  }
+}

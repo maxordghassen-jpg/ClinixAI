@@ -1,0 +1,10 @@
+{
+  "category": "hospitals",
+  "timestamp": "2026-03-14T11:21:08.737118",
+  "places_count": 415,
+  "stats": {
+    "api_calls": 530,
+    "governorates": 24,
+    "duration": "0:09:26.955409"
+  }
+}

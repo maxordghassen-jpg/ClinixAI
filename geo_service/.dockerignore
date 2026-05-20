@@ -1,0 +1,27 @@
+# Node modules (installed inside container)
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Environment files (sensitive)
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# OS / Editor / IDE
+.DS_Store
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts (will be rebuilt in container)
+dist
+coverage
+
+# Misc
+*.tgz

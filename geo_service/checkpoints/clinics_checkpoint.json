@@ -1,0 +1,10 @@
+{
+  "category": "clinics",
+  "timestamp": "2026-03-14T11:11:37.201979",
+  "places_count": 1212,
+  "stats": {
+    "api_calls": 1359,
+    "governorates": 24,
+    "duration": "0:23:02.411459"
+  }
+}

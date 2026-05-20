@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediLink - Recherche Médicale Tunisie</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Leaflet CSS pour la carte -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        }
+        .leaflet-container {
+            height: 100%;
+            width: 100%;
+            border-radius: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ============ ICONS ============
+        const MapPinIcon = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                <circle cx="12" cy="10" r="3"></circle>
+            </svg>
+        );
+
+        const SearchIcon = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.35-4.35"></path>
+            </svg>
+        );
+
+        const PhoneIcon = () => (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+            </svg>
+        );
+
+        const GlobeIcon = () => (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+        );
+
+        const ClockIcon = () => (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+        );
+
+        const NavigationIcon = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+            </svg>
+        );
+
+        const StarIcon = ({ filled }) => (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+            </svg>
+        );
+
+        // ============ COMPOSANT CARTE ============
+        function DoctorsMap({ doctorsBySpecialty, userLocation }) {
+            const mapRef = useRef(null);
+            const mapInstanceRef = useRef(null);
+            const markersRef = useRef([]);
+
+            useEffect(() => {
+                if (!mapRef.current || !userLocation) {
+                    console.log("Carte - En attente des données");
+                    return;
+                }
+
+                console.log("Carte - Initialisation", { 
+                    userLocation, 
+                    specialtiesCount: Object.keys(doctorsBySpecialty).length 
+                });
+
+                // Initialiser la carte
+                if (!mapInstanceRef.current) {
+                    try {
+                        mapInstanceRef.current = L.map(mapRef.current).setView(
+                            [userLocation.latitude, userLocation.longitude],
+                            12
+                        );
+
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '© OpenStreetMap contributors'
+                        }).addTo(mapInstanceRef.current);
+
+                        // Marqueur de l'utilisateur
+                        const userIcon = L.divIcon({
+                            className: 'user-marker',
+                            html: '<div style="background: #3B82F6; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>',
+                            iconSize: [20, 20]
+                        });
+
+                        L.marker([userLocation.latitude, userLocation.longitude], { icon: userIcon })
+                            .addTo(mapInstanceRef.current)
+                            .bindPopup('<strong>Votre position</strong>');
+                        
+                        console.log("Carte - Initialisée avec succès");
+                    } catch (error) {
+                        console.error("Erreur initialisation carte:", error);
+                        return;
+                    }
+                }
+
+                // Supprimer les anciens marqueurs
+                markersRef.current.forEach(marker => {
+                    try {
+                        marker.remove();
+                    } catch (e) {
+                        console.warn("Erreur suppression marqueur:", e);
+                    }
+                });
+                markersRef.current = [];
+
+                // Couleurs par spécialité
+                const colors = ['#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
+                let colorIndex = 0;
+                let totalMarkers = 0;
+
+                // Ajouter les marqueurs des médecins
+                Object.entries(doctorsBySpecialty).forEach(([specialty, doctors]) => {
+                    const color = colors[colorIndex % colors.length];
+                    colorIndex++;
+
+                    doctors.forEach(doctor => {
+                        if (!doctor.coordinates || !doctor.coordinates.lat || !doctor.coordinates.lng) {
+                            console.warn("Coordonnées manquantes pour:", doctor.name);
+                            return;
+                        }
+
+                        try {
+                            const icon = L.divIcon({
+                                className: 'doctor-marker',
+                                html: `<div style="background: ${color}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"></div>`,
+                                iconSize: [12, 12]
+                            });
+
+                            const popupContent = `
+                                <div style="min-width: 200px;">
+                                    <strong style="color: ${color}; font-size: 14px;">${doctor.name}</strong>
+                                    <p style="margin: 4px 0; font-size: 12px; color: #6B7280;">${specialty}</p>
+                                    <p style="margin: 4px 0; font-size: 11px;">${doctor.address}</p>
+                                    ${doctor.phone_number ? `<p style="margin: 4px 0; font-size: 11px;">📞 ${doctor.phone_number}</p>` : ''}
+                                    ${doctor.distance_text ? `<p style="margin: 4px 0; font-size: 11px; font-weight: bold; color: #3B82F6;">${doctor.distance_text}</p>` : ''}
+                                </div>
+                            `;
+
+                            const marker = L.marker([doctor.coordinates.lat, doctor.coordinates.lng], { icon })
+                                .addTo(mapInstanceRef.current)
+                                .bindPopup(popupContent);
+
+                            markersRef.current.push(marker);
+                            totalMarkers++;
+                        } catch (error) {
+                            console.error("Erreur ajout marqueur pour:", doctor.name, error);
+                        }
+                    });
+                });
+
+                console.log(`Carte - ${totalMarkers} marqueurs ajoutés`);
+
+            }, [doctorsBySpecialty, userLocation]);
+
+            // Cleanup
+            useEffect(() => {
+                return () => {
+                    if (mapInstanceRef.current) {
+                        try {
+                            mapInstanceRef.current.remove();
+                            mapInstanceRef.current = null;
+                            console.log("Carte - Nettoyée");
+                        } catch (e) {
+                            console.warn("Erreur nettoyage carte:", e);
+                        }
+                    }
+                };
+            }, []);
+
+            return <div ref={mapRef} style={{ height: '600px', width: '100%' }} />;
+        }
+
+        // ============ COMPOSANT CARTE ÉTABLISSEMENT ============
+        function EstablishmentCard({ place }) {
+            return (
+                <div className="bg-white rounded-xl shadow-lg hover:shadow-2xl transition-all duration-300 overflow-hidden">
+                    {place.image_url && (
+                        <a href={place.website || place.google_maps_url || '#'} target="_blank" rel="noopener noreferrer">
+                            <img 
+                                src={place.image_url} 
+                                alt={place.name}
+                                className="w-full h-48 object-cover hover:opacity-90 transition-opacity cursor-pointer"
+                            />
+                        </a>
+                    )}
+
+                    <div className="p-6">
+                        <div className="flex justify-between items-start mb-4">
+                            <div className="flex-1">
+                                <a 
+                                    href={place.website || place.google_maps_url || '#'} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="text-xl font-bold text-gray-800 hover:text-blue-600 transition-colors"
+                                >
+                                    {place.name}
+                                </a>
+                                {place.specialty && (
+                                    <span className="inline-block mt-2 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">
+                                        {place.specialty}
+                                    </span>
+                                )}
+                                {place.governorate && (
+                                    <span className="inline-block mt-2 ml-2 bg-gray-100 text-gray-700 px-3 py-1 rounded-full text-sm">
+                                        {place.governorate}
+                                    </span>
+                                )}
+                            </div>
+                            {place.distance_text && (
+                                <div className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold shadow-lg">
+                                    {place.distance_text}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex items-start gap-2 text-gray-600 mb-3">
+                            <MapPinIcon />
+                            <span className="text-sm">{place.address}</span>
+                        </div>
+
+                        {place.phone_number && (
+                            <div className="flex items-center gap-2 text-gray-600 mb-3">
+                                <PhoneIcon />
+                                <a href={`tel:${place.phone_number}`} className="hover:text-blue-600 font-medium text-sm">
+                                    {place.phone_number}
+                                </a>
+                            </div>
+                        )}
+
+                        {place.website && (
+                            <div className="flex items-center gap-2 text-gray-600 mb-3">
+                                <GlobeIcon />
+                                <a 
+                                    href={place.website} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="hover:text-blue-600 text-sm truncate"
+                                >
+                                    {place.website}
+                                </a>
+                            </div>
+                        )}
+
+                        <div className="flex items-center gap-4 mb-3">
+                            {place.rating && (
+                                <div className="flex items-center gap-1 text-yellow-400">
+                                    <StarIcon filled={true} />
+                                    <span className="font-semibold text-gray-800 text-sm">{place.rating}</span>
+                                    {place.user_ratings_total && (
+                                        <span className="text-gray-500 text-xs">({place.user_ratings_total})</span>
+                                    )}
+                                </div>
+                            )}
+                            {(place.is_open_now === true || place.is_open_now === false) && (
+                                <span className={`flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${
+                                    place.is_open_now 
+                                        ? 'bg-green-100 text-green-700' 
+                                        : 'bg-red-100 text-red-700'
+                                }`}>
+                                    <ClockIcon />
+                                    {place.is_open_now ? 'Ouvert' : 'Fermé'}
+                                </span>
+                            )}
+                        </div>
+
+                        {place.opening_hours && place.opening_hours.length > 0 && (
+                            <div className="bg-gray-50 rounded-lg p-3 mb-3">
+                                <h4 className="font-semibold text-gray-700 text-sm mb-2 flex items-center gap-2">
+                                    <ClockIcon />
+                                    Horaires d'ouverture
+                                </h4>
+                                <div className="space-y-1">
+                                    {place.opening_hours.map((day, idx) => (
+                                        <p key={idx} className="text-xs text-gray-600">{day}</p>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="flex gap-3 mt-4">
+                            {place.google_maps_url && (
+                                <a
+                                    href={place.google_maps_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 text-center text-sm"
+                                >
+                                    Voir sur Maps
+                                </a>
+                            )}
+                            {place.phone_number && (
+                                <a
+                                    href={`tel:${place.phone_number}`}
+                                    className="flex-1 bg-green-600 text-white py-2 rounded-lg font-medium hover:bg-green-700 text-center text-sm"
+                                >
+                                    Appeler
+                                </a>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============ COMPOSANT PRINCIPAL ============
+        function MediLinkApp() {
+            const [searchMode, setSearchMode] = useState('proximity'); // 'proximity' ou 'manual'
+            const [userLocation, setUserLocation] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [results, setResults] = useState([]);
+            const [doctorsBySpecialty, setDoctorsBySpecialty] = useState({});
+            const [selectedCategory, setSelectedCategory] = useState('pharmacies');
+            const [radius, setRadius] = useState(6);
+            const [error, setError] = useState('');
+            const [specialties, setSpecialties] = useState([]);
+            const [selectedSpecialty, setSelectedSpecialty] = useState('');
+            const [governorates, setGovernorates] = useState([]);
+            const [selectedGovernorate, setSelectedGovernorate] = useState('');
+            const [manualQuery, setManualQuery] = useState('');
+
+            const categories = [
+                { id: 'pharmacies', name: 'Pharmacies', icon: '💊' },
+                { id: 'on_call_pharmacies', name: 'Pharmacies de Garde', icon: '🚑' },
+                { id: 'night_pharmacies', name: 'Pharmacies de Nuit', icon: '🌙' },
+                { id: 'parapharmacies', name: 'Parapharmacies', icon: '🧴' },
+                { id: 'clinics', name: 'Cliniques', icon: '🏥' },
+                { id: 'hospitals', name: 'Hôpitaux', icon: '🏨' },
+                { id: 'analysis_labs', name: 'Laboratoires', icon: '🔬' },
+                { id: 'nurses', name: 'Infirmiers', icon: '👨‍⚕️' },
+                { id: 'physiotherapists', name: 'Kinés', icon: '💆' },
+                { id: 'doctors', name: 'Médecins', icon: '👨‍⚕️' }
+            ];
+
+            const getUserLocation = () => {
+                setLoading(true);
+                setError('');
+
+                if (!navigator.geolocation) {
+                    setError('La géolocalisation n\'est pas supportée par votre navigateur');
+                    setLoading(false);
+                    return;
+                }
+
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const location = {
+                            latitude: position.coords.latitude,
+                            longitude: position.coords.longitude
+                        };
+                        setUserLocation(location);
+                        if (selectedCategory === 'doctors') {
+                            searchDoctorsForMap(location);
+                        } else {
+                            searchNearby(location);
+                        }
+                    },
+                    (error) => {
+                        setError('Impossible d\'obtenir votre position. Veuillez autoriser la géolocalisation.');
+                        setLoading(false);
+                    }
+                );
+            };
+
+            const searchNearby = async (location) => {
+                setLoading(true);
+                setError('');
+                try {
+                    const response = await fetch('http://localhost:5000/api/nearby', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            latitude: location.latitude,
+                            longitude: location.longitude,
+                            category: selectedCategory,
+                            radius: radius,
+                            limit: 100,
+                            governorate: selectedGovernorate || undefined,
+                            specialty: selectedSpecialty || undefined
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        setResults(data.results);
+                        setDoctorsBySpecialty({});
+                    } else {
+                        setError(data.error || 'Erreur lors de la recherche');
+                    }
+                } catch (err) {
+                    setError('Erreur de connexion au serveur');
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const searchDoctorsForMap = async (location) => {
+                setLoading(true);
+                setError('');
+                try {
+                    const response = await fetch('http://localhost:5000/api/doctors/map', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            latitude: location.latitude,
+                            longitude: location.longitude,
+                            radius: radius,
+                            specialty: selectedSpecialty || undefined,
+                            governorate: selectedGovernorate || undefined
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        setDoctorsBySpecialty(data.doctors_by_specialty);
+                        setResults([]);
+                    } else {
+                        setError(data.error || 'Erreur lors de la recherche');
+                    }
+                } catch (err) {
+                    setError('Erreur de connexion au serveur');
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const searchManual = async () => {
+                if (!manualQuery.trim() && !selectedGovernorate && !selectedSpecialty) {
+                    setError('Veuillez entrer un terme de recherche ou sélectionner un filtre');
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                try {
+                    const response = await fetch('http://localhost:5000/api/search/manual', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            query: manualQuery,
+                            category: selectedCategory,
+                            governorate: selectedGovernorate || undefined,
+                            specialty: selectedSpecialty || undefined,
+                            limit: 100
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        setResults(data.results);
+                        setDoctorsBySpecialty({});
+                    } else {
+                        setError(data.error || 'Erreur lors de la recherche');
+                    }
+                } catch (err) {
+                    setError('Erreur de connexion au serveur');
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const loadSpecialties = async () => {
+                try {
+                    const response = await fetch('http://localhost:5000/api/specialties');
+                    const data = await response.json();
+                    if (data.success) {
+                        setSpecialties(data.specialties);
+                    }
+                } catch (err) {
+                    console.error('Erreur chargement spécialités:', err);
+                }
+            };
+
+            const loadGovernorates = async () => {
+                try {
+                    const response = await fetch(`http://localhost:5000/api/governorates?category=${selectedCategory}`);
+                    const data = await response.json();
+                    if (data.success) {
+                        setGovernorates(data.governorates);
+                    }
+                } catch (err) {
+                    console.error('Erreur chargement gouvernorats:', err);
+                }
+            };
+
+            useEffect(() => {
+                if (searchMode === 'proximity') {
+                    getUserLocation();
+                }
+                loadGovernorates();
+                if (selectedCategory === 'doctors') {
+                    loadSpecialties();
+                }
+            }, []);
+
+            useEffect(() => {
+                if (searchMode === 'proximity' && userLocation) {
+                    if (selectedCategory === 'doctors') {
+                        searchDoctorsForMap(userLocation);
+                    } else {
+                        searchNearby(userLocation);
+                    }
+                }
+                loadGovernorates();
+                if (selectedCategory === 'doctors') {
+                    loadSpecialties();
+                }
+            }, [selectedCategory, radius, selectedSpecialty, selectedGovernorate, searchMode]);
+
+            const totalResults = selectedCategory === 'doctors' && searchMode === 'proximity'
+                ? Object.values(doctorsBySpecialty).reduce((sum, docs) => sum + docs.length, 0)
+                : results.length;
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+                    <div className="max-w-7xl mx-auto">
+                        {/* Header */}
+                        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+                            <h1 className="text-3xl font-bold text-gray-800 mb-2 flex items-center gap-3">
+                                <MapPinIcon />
+                                MediLink - Recherche Médicale Tunisie
+                            </h1>
+                            {searchMode === 'proximity' && userLocation && (
+                                <p className="text-gray-600 text-sm">
+                                    📍 Position : {userLocation.latitude.toFixed(4)}, {userLocation.longitude.toFixed(4)}
+                                </p>
+                            )}
+                        </div>
+
+                        {/* MODE DE RECHERCHE */}
+                        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+                            <label className="block text-sm font-semibold text-gray-700 mb-3">
+                                Mode de recherche
+                            </label>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setSearchMode('proximity')}
+                                    className={`flex-1 px-6 py-3 rounded-lg font-medium transition-all ${
+                                        searchMode === 'proximity'
+                                            ? 'bg-blue-600 text-white shadow-lg'
+                                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                    }`}
+                                >
+                                    📍 Recherche par proximité
+                                </button>
+                                <button
+                                    onClick={() => setSearchMode('manual')}
+                                    className={`flex-1 px-6 py-3 rounded-lg font-medium transition-all ${
+                                        searchMode === 'manual'
+                                            ? 'bg-blue-600 text-white shadow-lg'
+                                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                    }`}
+                                >
+                                    🔍 Recherche manuelle
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Contrôles */}
+                        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+                            {/* Catégories */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700 mb-3">
+                                    Catégorie
+                                </label>
+                                <div className="flex flex-wrap gap-2">
+                                    {categories.map((cat) => (
+                                        <button
+                                            key={cat.id}
+                                            onClick={() => {
+                                                setSelectedCategory(cat.id);
+                                                setSelectedSpecialty('');
+                                                setResults([]);
+                                                setDoctorsBySpecialty({});
+                                            }}
+                                            className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                                                selectedCategory === cat.id
+                                                    ? 'bg-blue-600 text-white shadow-lg scale-105'
+                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                            }`}
+                                        >
+                                            {cat.icon} {cat.name}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* BARRE DE RECHERCHE MANUELLE */}
+                            {searchMode === 'manual' && (
+                                <div className="mb-4">
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                        Rechercher par nom ou lieu
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={manualQuery}
+                                            onChange={(e) => setManualQuery(e.target.value)}
+                                            onKeyPress={(e) => e.key === 'Enter' && searchManual()}
+                                            placeholder="Ex: Pharmacie Mongi Slim, Tunis..."
+                                            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        />
+                                        <button
+                                            onClick={searchManual}
+                                            disabled={loading}
+                                            className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2"
+                                        >
+                                            <SearchIcon />
+                                            Chercher
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Filtres pour médecins */}
+                            {selectedCategory === 'doctors' && (
+                                <div className="mb-4">
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                        Spécialité
+                                    </label>
+                                    <select
+                                        value={selectedSpecialty}
+                                        onChange={(e) => setSelectedSpecialty(e.target.value)}
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    >
+                                        <option value="">Toutes les spécialités</option>
+                                        {specialties.map((spec, idx) => (
+                                            <option key={idx} value={spec.name}>
+                                                {spec.name} ({spec.count})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+
+                            {/* Filtre gouvernorat */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    Gouvernorat
+                                </label>
+                                <select
+                                    value={selectedGovernorate}
+                                    onChange={(e) => setSelectedGovernorate(e.target.value)}
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                >
+                                    <option value="">Tous les gouvernorats</option>
+                                    {governorates.map((gov, idx) => (
+                                        <option key={idx} value={gov.name}>
+                                            {gov.name} ({gov.count})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Rayon (uniquement en mode proximité) */}
+                            {searchMode === 'proximity' && (
+                                <div className="mb-4">
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                        Rayon de recherche : {radius} km
+                                    </label>
+                                    <input
+                                        type="range"
+                                        min="1"
+                                        max="30"
+                                        value={radius}
+                                        onChange={(e) => setRadius(parseInt(e.target.value))}
+                                        className="w-full h-2 bg-gray-200 rounded-lg cursor-pointer"
+                                    />
+                                    <div className="flex justify-between text-xs text-gray-500 mt-1">
+                                        <span>1 km</span>
+                                        <span>30 km</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {searchMode === 'proximity' && (
+                                <button
+                                    onClick={getUserLocation}
+                                    disabled={loading}
+                                    className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <NavigationIcon />
+                                    {loading ? 'Recherche en cours...' : 'Actualiser ma position'}
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Erreur */}
+                        {error && (
+                            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Résultats */}
+                        {loading ? (
+                            <div className="text-center py-12">
+                                <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent"></div>
+                                <p className="mt-4 text-gray-600">Recherche en cours...</p>
+                            </div>
+                        ) : selectedCategory === 'doctors' && searchMode === 'proximity' ? (
+                            // Affichage CARTE pour les médecins en mode proximité
+                            <div>
+                                <div className="text-center text-gray-600 font-medium mb-4">
+                                    {totalResults} médecin{totalResults > 1 ? 's' : ''} trouvé{totalResults > 1 ? 's' : ''} dans {Object.keys(doctorsBySpecialty).length} spécialité{Object.keys(doctorsBySpecialty).length > 1 ? 's' : ''}
+                                </div>
+                                
+                                {totalResults === 0 ? (
+                                    <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
+                                        <SearchIcon />
+                                        <p className="text-gray-600 text-lg mt-4">
+                                            Aucun médecin trouvé
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="bg-white rounded-2xl shadow-xl p-6">
+                                        <h2 className="text-xl font-bold text-gray-800 mb-4">
+                                            Médecins par spécialité
+                                        </h2>
+                                        
+                                        {/* Légende */}
+                                        <div className="mb-4 flex flex-wrap gap-2">
+                                            {Object.entries(doctorsBySpecialty).map(([specialty, doctors], idx) => {
+                                                const colors = ['#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
+                                                const color = colors[idx % colors.length];
+                                                return (
+                                                    <span key={specialty} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-full text-sm">
+                                                        <span style={{ backgroundColor: color, width: '12px', height: '12px', borderRadius: '50%', display: 'inline-block' }}></span>
+                                                        {specialty} ({doctors.length})
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                        
+                                        {/* Carte */}
+                                        <DoctorsMap 
+                                            doctorsBySpecialty={doctorsBySpecialty} 
+                                            userLocation={userLocation}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            // Affichage LISTE pour les autres établissements ou recherche manuelle
+                            <div>
+                                <div className="text-center text-gray-600 font-medium mb-4">
+                                    {totalResults} établissement{totalResults > 1 ? 's' : ''} trouvé{totalResults > 1 ? 's' : ''}
+                                </div>
+                                
+                                {totalResults === 0 ? (
+                                    <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
+                                        <SearchIcon />
+                                        <p className="text-gray-600 text-lg mt-4">
+                                            Aucun établissement trouvé
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                        {results.map((place, index) => (
+                                            <EstablishmentCard key={place.id || index} place={place} />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<MediLinkApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>

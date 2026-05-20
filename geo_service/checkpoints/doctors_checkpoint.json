@@ -1,0 +1,10 @@
+{
+  "category": "doctors",
+  "timestamp": "2026-03-14T13:41:09.682273",
+  "places_count": 5083,
+  "stats": {
+    "api_calls": 6031,
+    "governorates": 24,
+    "duration": "1:44:59.855861"
+  }
+}

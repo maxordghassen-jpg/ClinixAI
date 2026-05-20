@@ -1,0 +1,10 @@
+{
+  "category": "pharmacies",
+  "timestamp": "2026-03-14T09:51:24.237767",
+  "places_count": 1357,
+  "stats": {
+    "api_calls": 1535,
+    "governorates": 24,
+    "duration": "0:26:53.567048"
+  }
+}
