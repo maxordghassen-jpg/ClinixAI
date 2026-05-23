@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-
+from datetime import datetime
 from app.schemas.availability_schema import (
     AvailabilityCreate,
     AvailabilityResponse,
@@ -64,6 +64,47 @@ async def view_day_availability(doctor_id: str, day: Day):
     return await AvailabilityService().get_day_availability(doctor_id, day)
 
 
-@router.get("/{doctor_id}/{day}/free-slots", response_model=list[SlotSchema])
-async def view_free_slots(doctor_id: str, day: Day):
-    return await AvailabilityService().get_free_slots(doctor_id, day)
+from datetime import datetime
+
+@router.get(
+    "/{doctor_id}/{date}/free-slots",
+    response_model=list[SlotSchema],
+)
+async def view_free_slots(
+    doctor_id: str,
+    date: str,
+):
+
+    parsed_date = datetime.strptime(
+        date,
+        "%Y-%m-%d",
+    )
+
+    english_day = (
+        parsed_date
+        .strftime("%A")
+        .lower()
+    )
+
+    mapping = {
+        "monday": "lundi",
+        "tuesday": "mardi",
+        "wednesday": "mercredi",
+        "thursday": "jeudi",
+        "friday": "vendredi",
+        "saturday": "samedi",
+        "sunday": "dimanche",
+    }
+
+    day = mapping[
+        english_day
+    ]
+
+    return await (
+        AvailabilityService()
+        .get_free_slots(
+            doctor_id,
+            day,
+            date,
+        )
+    )

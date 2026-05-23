@@ -1,22 +1,27 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import (
+    BaseSettings,
+    SettingsConfigDict,
+)
 
 
 class Settings(BaseSettings):
 
     MONGODB_URI: str
 
-    DATABASE_NAME: str = "disponibility"
+    DATABASE_NAME: str
 
-    PORT: int = 8002
+    APPOINTMENT_SERVICE_URL: str
 
     LOG_DIR: str = "logs"
 
-    LOG_FILE: str = "availability_service.log"
+    LOG_FILE: str = "availability.log"
 
     LOG_LEVEL: str = "INFO"
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+    )
 
 
 settings = Settings()

@@ -221,3 +221,67 @@ def completed_message(language: str) -> str:
         "fr": "La demande a été effectuée.",
         "ar": "تم تنفيذ الطلب.",
     }[language]
+
+
+def format_daily_schedule(
+    items: list[dict[str, Any]],
+    language: str,
+    context: str | None = None,
+) -> str:
+    """
+    Compact calendar view for the doctor’s schedule.
+
+    Each line: "10:00 — Ahmed Ben Ali (confirmed)"
+    Groups multiple dates with a date header when the list spans more than one day.
+
+    Returns an empty_message if the list is empty.
+    """
+    if not items:
+        return empty_message(language)
+
+    header_templates = {
+        "en": "Schedule{ctx}:",
+        "fr": "Planning{ctx} :",
+        "ar": "جدول{ctx}:",
+    }
+    ctx_str = f" — {context}" if context else ""
+    header = header_templates.get(language, header_templates["en"]).format(ctx=ctx_str)
+
+    # Detect multi-day: group by date
+    from collections import defaultdict
+    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in sorted(items, key=lambda a: (str(a.get("date", "")), a.get("time", ""))):
+        date_key = _date_key(item.get("date"))
+        by_date[date_key].append(item)
+
+    lines = [header]
+    multi_day = len(by_date) > 1
+
+    for date_key, day_items in sorted(by_date.items()):
+        if multi_day:
+            date_label = format_date(date_key, language) or date_key
+            lines.append(f"\n📅 {date_label}")
+
+        for item in day_items:
+            time_val  = item.get("time", "--:--")
+            end_time  = item.get("end_time")
+            name      = patient_display_name(item)
+            raw_status = item.get("status", "pending")
+            status_lbl = format_status(raw_status, language)
+
+            time_range = f"{time_val}–{end_time}" if end_time else time_val
+            lines.append(f"  {time_range}  —  {name}  ({status_lbl})")
+
+    return "\n".join(lines)
+
+
+def _date_key(value: Any) -> str:
+    """Extract a YYYY-MM-DD string from a date field (datetime or string)."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            return value
+    return str(value)

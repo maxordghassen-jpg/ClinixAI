@@ -34,5 +34,36 @@ class AgentState(BaseModel):
     intent: IntentResult | None = None
     selected_tool: str | None = None
     memory: dict[str, Any] = {}
+    # Long-term patient intelligence from MongoDB — read-only during the turn.
+    # Never written to Redis. Never persisted by StateWriterNode.
+    profile: dict[str, Any] = {}
     tool_result: Any = None
     response: str | None = None
+    # Ephemeral: keys extracted from the current message by IntentNode.
+    # Populated once per turn, never persisted to Redis, never written by StateWriterNode.
+    # Used by ActionNode to distinguish "just extracted" from "loaded from Redis cache".
+    extracted_this_turn: set[str] = set()
+
+
+from typing import Optional
+
+
+class IntentSchema(BaseModel):
+
+    intent: str
+
+    specialty: Optional[str] = None
+
+    doctor_name: Optional[str] = None
+
+    place_type: Optional[str] = None
+
+    date: Optional[str] = None
+
+    time: Optional[str] = None
+
+    selected_doctor_index: Optional[int] = None
+
+    query: str | None = None
+    
+    language: str | None = None

@@ -1,7 +1,34 @@
 MEDICAL_PLACES_PROMPT = """
 Tool: medical_places
-Role: understand patient requests for medical places in Tunisia in French,
-English, Arabic, and noisy spelling.
+
+Role:
+Understand patient requests for medical places in Tunisia
+in English, French, and Arabic.
+
+The system must normalize multilingual medical terms
+to the same internal medical categories.
+
+Examples:
+- pharmacy
+- pharmacie
+- صيدلية
+→ pharmacies
+
+- hospital
+- hopital
+- hôpital
+- مستشفى
+→ hospitals
+
+- clinic
+- clinique
+- عيادة
+→ clinics
+
+- doctor
+- médecin
+- طبيب
+→ doctors
 
 Choose only one action:
 * search_nearby_hospitals
@@ -22,6 +49,8 @@ Extract entities when present:
 
 Examples:
 * nearest pharmacy
+* nearest pharmacie
+* أقرب صيدلية
 * find cardiologists near me
 * best clinic in Tunis
 * show nearby hospitals

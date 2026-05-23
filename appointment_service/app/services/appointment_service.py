@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
@@ -5,8 +6,11 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.core.config import settings
-from app.repositories.appointment_repository import AppointmentRepository
+from app.core.logger import get_logger
+from app.repositories.appointment_repository import AppointmentRepository, ACTIVE_STATUSES
 from app.schemas.appointment_schema import ReservationCreate, ReservationReschedule
+
+logger = get_logger(__name__)
 
 
 DAY_NAMES = [
@@ -169,13 +173,40 @@ class AppointmentService:
         end_date: datetime,
         status_value: str | None,
     ) -> list[dict[str, Any]]:
+        # Effective filter applied by the repository:
+        #   None / "active" → ACTIVE_STATUSES only (confirmed + pending)
+        #   "all"           → no filter
+        #   other           → exact match
+        effective_filter = (
+            f"active({ACTIVE_STATUSES})" if status_value in (None, "active")
+            else status_value or "active(default)"
+        )
+        logger.info(
+            "patient_appointments_query | patient=%s | window=[%s, %s) | filter=%s",
+            patient_id,
+            start_date.date(),
+            end_date.date(),
+            effective_filter,
+        )
+
         documents = await self.repository.list_by_patient_date_range(
             patient_id,
             start_date,
             end_date,
             status_value,
         )
-        return [self._serialize(document) for document in documents]
+        serialized = [self._serialize(document) for document in documents]
+
+        # Status distribution for observability
+        dist = dict(Counter(a["status"] for a in serialized))
+        logger.info(
+            "patient_appointments_result | patient=%s | total=%d | distribution=%s",
+            patient_id,
+            len(serialized),
+            dist,
+        )
+
+        return serialized
 
     async def _update_status(self, reservation_id: str, status_value: str) -> dict[str, Any]:
         document = await self.repository.update_status(reservation_id, status_value)
@@ -212,13 +243,26 @@ class AppointmentService:
         return datetime.combine(date_value.date(), time.min, tzinfo=timezone.utc)
 
     def _serialize(self, document: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "id": str(document["_id"]),
-            "doctor_id": document["doctorId"],
+        result: dict[str, Any] = {
+            "id":         str(document["_id"]),
+            "doctor_id":  document["doctorId"],
             "patient_id": document["patientId"],
-            "date": document["date"],
-            "time": document["time"],
-            "status": document["status"],
+            "date":       document["date"],
+            "time":       document["time"],
+            "status":     document["status"],
             "created_at": document["createdAt"],
             "updated_at": document["updatedAt"],
         }
+        # Pass-through optional relationship fields — absent on legacy records
+        for mongo_key, api_key in (
+            ("doctorName",  "doctor_name"),
+            ("patientName", "patient_name"),
+            ("specialty",   "specialty"),
+            ("endTime",     "end_time"),
+            ("source",      "source"),
+            ("notes",       "notes"),
+        ):
+            value = document.get(mongo_key)
+            if value is not None:
+                result[api_key] = value
+        return result

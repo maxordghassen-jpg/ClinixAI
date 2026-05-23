@@ -31,7 +31,5 @@ class PatientGraph:
         state = await ResponseGenerator().run(state)
         return {
             "response": state.response,
-            "intent": state.intent.model_dump() if state.intent else None,
-            "memory": state.memory,
-            "data": state.tool_result,
+            "intent": state.intent.model_dump() if state.intent else None
         }

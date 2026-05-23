@@ -17,6 +17,16 @@ class IntentDetector:
 
     def _fallback(self, message: str) -> IntentResult:
         text = message.lower()
+        # Exception / closure keywords — check before generic availability
+        if any(w in text for w in ["vacation", "congé", "conge", "fermeture", "closure", "unavailable"]):
+            if any(w in text for w in ["to ", "au ", "until", "jusqu", "-"]):
+                return IntentResult(tool="availability", action="vacation_mode", confidence=0.4)
+            return IntentResult(tool="availability", action="block_day", confidence=0.4)
+        if any(w in text for w in ["override", "only", "seulement", "uniquement"]):
+            return IntentResult(tool="availability", action="override_hours", confidence=0.4)
+        if any(w in text for w in ["exceptions", "blocages", "fermetures"]):
+            return IntentResult(tool="availability", action="view_exceptions", confidence=0.4)
+
         if any(word in text for word in ["dispon", "availability", "slot", "créneau", "creneau"]):
             action = "view_available_slots"
             if "block" in text or "bloqu" in text:
@@ -24,9 +34,15 @@ class IntentDetector:
             if "unblock" in text or "débloqu" in text or "debloqu" in text:
                 action = "unblock_availability"
             return IntentResult(tool="availability", action=action, confidence=0.4)
-        if any(word in text for word in ["rdv", "rendez", "appointment", "موعد"]):
+        if any(word in text for word in [
+            "rdv", "rendez", "appointment", "موعد", "schedule", "planning", "agenda"
+        ]):
             action = "view_appointments"
-            if "today" in text or "aujourd" in text:
+            if any(w in text for w in ["schedule", "planning", "agenda", "calendar"]):
+                action = "daily_schedule"
+                if "week" in text or "semaine" in text:
+                    action = "weekly_schedule"
+            elif "today" in text or "aujourd" in text:
                 action = "view_today_appointments"
             elif "tomorrow" in text or "demain" in text:
                 action = "view_tomorrow_appointments"
@@ -36,7 +52,9 @@ class IntentDetector:
                 action = "confirm_appointment"
             elif "reject" in text or "refus" in text:
                 action = "reject_appointment"
-            elif "cancel" in text or "annul" in text:
+            elif any(w in text for w in ["cancel", "annul"]):
                 action = "cancel_appointment"
+            elif any(w in text for w in ["reschedule", "reporter", "déplacer", "deplac"]):
+                action = "reschedule_appointment"
             return IntentResult(tool="appointments", action=action, confidence=0.4)
         return IntentResult()

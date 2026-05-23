@@ -1,11 +1,13 @@
 from typing import Any
 
+from graphs.doctor.tools.appointments.intents import is_schedule_view
 from graphs.shared.formatting import (
     appointment_date_context,
     appointment_header,
     completed_message,
     doctor_display_name,
     empty_message,
+    format_daily_schedule,
     format_date,
     format_status,
     format_weekday,
@@ -36,7 +38,14 @@ class ResponseGenerator:
         if not items:
             return empty_message(language)
         if state.intent and state.intent.tool == "appointments":
-            context = appointment_date_context(items, state.intent.action, language)
+            action = state.intent.action
+
+            # Compact calendar view for daily/weekly schedule actions
+            if is_schedule_view(action):
+                context = appointment_date_context(items, action, language)
+                return format_daily_schedule(items, language, context)
+
+            context = appointment_date_context(items, action, language)
             lines = [appointment_header(len(items), context, language)]
             for item in items:
                 lines.append(self._format_appointment_line(item, state, language))
@@ -69,13 +78,34 @@ class ResponseGenerator:
         state: AgentState,
         language: str,
     ) -> str:
+        doctor_or_patient = (
+            doctor_display_name(item)
+            if state.role == "patient"
+            else patient_display_name(item)
+        )
+
+        date_value = format_date(item.get("date"), language)
         time_value = item.get("time", "--:--")
-        person_name = doctor_display_name(item) if state.role == "patient" else patient_display_name(item)
         status = format_status(item.get("status"), language)
-        if state.role == "patient":
-            weekday = format_weekday(item.get("date"), language)
-            time_value = f"{weekday} {time_value}" if weekday else time_value
-        return f"• {time_value} — {person_name} — {status}"
+
+        status_icons = {
+            "confirmed": "✅",
+            "pending": "🟡",
+            "rejected": "❌",
+            "cancelled": "🚫",
+        }
+
+        raw_status = item.get("status", "pending")
+        icon = status_icons.get(raw_status, "ℹ️")
+
+        lines = [
+            f"\n• {doctor_or_patient}",
+            f"  📅 {date_value}",
+            f"  🕒 {time_value}",
+            f"  {icon} {status}",
+        ]
+
+        return "\n".join(lines)
 
     def _format_slot_line(self, item: dict[str, Any], language: str) -> str:
         start = item.get("start", "--:--")
@@ -116,22 +146,51 @@ class ResponseGenerator:
     def _format_medical_places(self, item: dict[str, Any], language: str) -> str:
         results = item.get("results", [])
         count = item.get("results_count", len(results))
+
         if not results:
             return empty_message(language)
 
         if language == "fr":
-            header = f"J’ai trouvé {count} établissements médicaux :"
+            header = f"J’ai trouvé {count} résultats :"
+            open_text = "🟢 Ouvert"
+            closed_text = "🔴 Fermé"
+
         elif language == "ar":
-            header = f"وجدت {count} مرافق طبية:"
+            header = f"وجدت {count} نتائج:"
+            open_text = "🟢 مفتوح"
+            closed_text = "🔴 مغلق"
+
         else:
-            header = f"I found {count} medical places:"
+            header = f"I found {count} results:"
+            open_text = "🟢 Open"
+            closed_text = "🔴 Closed"
 
         lines = [header]
-        for place in results[:5]:
-            detail = self._place_detail(place)
-            lines.append(f"• {place.get('name', 'Unknown place')}{detail}")
-        return "\n".join(lines)
 
+        for place in results[:5]:
+            name = place.get("name", "Unknown place")
+            address = place.get("address", "Unknown address")
+            rating = place.get("rating")
+            phone = place.get("phone_number")
+            is_open = place.get("is_open_now")
+
+            lines.append(f"\n• {name}")
+
+            lines.append(f"  📍 {address}")
+
+            if rating:
+                lines.append(f"  ⭐ {rating}/5")
+
+            if phone:
+                lines.append(f"  📞 {phone}")
+
+            if is_open is not None:
+                if is_open:
+                    lines.append(f"  {open_text}")
+                else:
+                    lines.append(f"  {closed_text}")
+
+        return "\n".join(lines)
     def _place_detail(self, place: dict[str, Any]) -> str:
         parts = []
         if place.get("distance_text"):

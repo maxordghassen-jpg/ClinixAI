@@ -117,9 +117,7 @@ def find_nearby():
         }
         
         # Construire le filtre MongoDB avec collection_type
-        search_filter = {
-            'collection_type': collection_type_map.get(category, category)
-        }
+        search_filter = {}
         
         if specialty and category == 'doctors':
             search_filter['specialty'] = {'$regex': specialty, '$options': 'i'}
@@ -314,24 +312,69 @@ def manual_search():
         }
         
         # Construire le filtre de recherche avec collection_type
-        search_filter = {
-            'collection_type': collection_type_map.get(category, category)
-        }
+        search_filter = {}
         
         # Recherche par nom ou adresse
+        # Recherche par nom ou adresse
         if query:
+            normalized_search = query
+
+            # multilingual normalization
+            normalization_map = {
+                "pharmacies": "pharmacie",
+                "pharmacy": "pharmacie",
+                "صيدلية": "pharmacie",
+
+                "hospitals": "hopital",
+                "hospital": "hopital",
+                "مستشفى": "hopital",
+
+                "clinics": "clinique",
+                "clinic": "clinique",
+                "عيادة": "clinique",
+            }
+
+            normalized_search = normalization_map.get(
+                str(query).lower(),
+                query,
+            )
+
+            print(f"🔄 Normalized search: {normalized_search}")
+
             search_filter['$or'] = [
-                {'name': {'$regex': query, '$options': 'i'}},
-                {'address': {'$regex': query, '$options': 'i'}}
+                {
+                    'name': {
+                        '$regex': normalized_search,
+                        '$options': 'i'
+                    }
+                },
+                {
+                    'address': {
+                        '$regex': normalized_search,
+                        '$options': 'i'
+                    }
+                },
+                {
+                    'search_query': {
+                        '$regex': normalized_search,
+                        '$options': 'i'
+                    }
+                },
+                {
+                    'types': {
+                        '$regex': normalized_search,
+                        '$options': 'i'
+                    }
+                }
             ]
-        
         # Filtres additionnels
         if specialty and category == 'doctors':
             search_filter['specialty'] = {'$regex': specialty, '$options': 'i'}
         
         if governorate:
             search_filter['governorate'] = {'$regex': governorate, '$options': 'i'}
-        
+        print("🧪 FINAL SEARCH FILTER:")
+        print(search_filter)
         # Rechercher dans la base
         results = list(collection.find(search_filter).limit(limit))
         
@@ -389,6 +432,46 @@ def manual_search():
         print(f"❌ Erreur : {e}")
         import traceback
         traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/doctors/lookup', methods=['POST'])
+def lookup_doctors_by_ids():
+    """
+    Batch-resolve doctor names from a list of MongoDB ObjectId strings.
+    Returns {id: name} for every matched ID.  Missing / invalid IDs are omitted.
+    """
+    from bson import ObjectId
+
+    try:
+        data = request.json or {}
+        raw_ids = data.get('ids', [])
+
+        if not raw_ids:
+            return jsonify({})
+
+        object_ids = []
+        for id_str in raw_ids:
+            try:
+                object_ids.append(ObjectId(str(id_str)))
+            except Exception:
+                pass
+
+        if not object_ids:
+            return jsonify({})
+
+        docs = list(
+            db['doctors'].find(
+                {'_id': {'$in': object_ids}},
+                {'name': 1},
+            )
+        )
+        result = {str(doc['_id']): doc.get('name', '') for doc in docs}
+        print(f"[lookup] resolved {len(result)}/{len(raw_ids)} doctor IDs")
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"❌ lookup_doctors_by_ids error: {e}")
         return jsonify({'error': str(e)}), 500
 
 
