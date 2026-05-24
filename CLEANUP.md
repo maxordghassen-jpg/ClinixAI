@@ -35,9 +35,9 @@ These files are provably dead: no active code imports them. Deleting them cannot
 
 | File | Reason |
 |------|--------|
-| `agent_service/graphs/shared/memory_extractor.py` | `MemoryExtractor` regex extractor, replaced by LLM `IntentNode`. Not imported anywhere active. |
 | `agent_service/graphs/shared/context_recovery.py` | `ContextRecovery` rule-based class, not imported by any live node |
-| `agent_service/graphs/shared/llm_router.py` | `LLMRouter` raw httpx Groq client. Live code uses `AsyncGroq` SDK directly. Not imported anywhere active. |
+
+> **Audit correction:** `memory_extractor.py` and `llm_router.py` were initially listed as dead but are actively used by the live doctor pipeline (`graphs/doctor/nodes/memory_node.py` uses `MemoryExtractor`; `graphs/doctor/nodes/intent_detector.py` uses `LLMRouter`). Both moved to Category D.
 
 ### Dead App Layer
 
@@ -46,7 +46,7 @@ These files are provably dead: no active code imports them. Deleting them cannot
 | `agent_service/app/memory/session_memory.py` | In-memory Python dict session store, replaced by `RedisMemory`. Not imported. |
 | `agent_service/app/core/dependencies.py` | `get_llm_router()` — not called anywhere in active code |
 
-### Dead Doctor Tools
+### Dead Doctor Tools (pre-migration)
 
 | File | Reason |
 |------|--------|
@@ -55,9 +55,10 @@ These files are provably dead: no active code imports them. Deleting them cannot
 
 ### Dead Code Inside Active Files
 
-| Location | What to remove |
-|----------|---------------|
-| `agent_service/graphs/shared/schemas.py` lines 48–69 | Second `IntentSchema` class definition — dead duplicate. Live `IntentNode` defines its own locally. |
+| Location | Status | What to do |
+|----------|--------|------------|
+| `agent_service/graphs/shared/schemas.py` lines 48–69 | **DONE** | Dead `IntentSchema` block already deleted. |
+| `agent_service/graphs/doctor/tools/appointments/intents.py` `is_appointment_action` | LOW PRIORITY | Function never called — can be removed from the file in a future pass without deleting the file itself. |
 
 ---
 
@@ -106,10 +107,18 @@ Core runtime files. Do not modify without understanding the full dependency chai
 | `agent_service/graphs/patient/handlers/geo_handler.py` | Geo search |
 | `agent_service/graphs/patient/mcp/tool_caller.py` | Patient MCP adapter |
 | `agent_service/graphs/patient/services/` | Service classes used by handlers |
-| `agent_service/graphs/doctor/navigation_graph.py` | Live doctor pipeline |
-| `agent_service/graphs/doctor/nodes/` (all) | Doctor pipeline nodes |
-| `agent_service/graphs/doctor/tools/appointments/executor.py` | Appointment tool |
-| `agent_service/graphs/doctor/tools/availability/executor.py` | Availability tool |
+| `agent_service/graphs/doctor/navigation_graph.py` | Live doctor pipeline — `IntentDetector → MemoryNode → ActionNode → ResponseGenerator → StateWriterNode` |
+| `agent_service/graphs/doctor/nodes/intent_detector.py` | LLM intent detection via `LLMRouter` + fallback rules |
+| `agent_service/graphs/doctor/nodes/memory_node.py` | Redis load, entity extraction via `MemoryExtractor` |
+| `agent_service/graphs/doctor/nodes/action_node.py` | Routes `appointments`/`availability` to domain handlers |
+| `agent_service/graphs/doctor/nodes/response_generator.py` | Formats `tool_result` into human response |
+| `agent_service/graphs/doctor/nodes/state_writer_node.py` | Authoritative Redis write for doctor graph |
+| `agent_service/graphs/doctor/handlers/appointments_handler.py` | All appointment read/write/manage logic |
+| `agent_service/graphs/doctor/handlers/availability_handler.py` | All availability template + exception logic |
+| `agent_service/graphs/doctor/tools/appointments/prompts.py` | `APPOINTMENTS_PROMPT` — used by `intent_detector` |
+| `agent_service/graphs/doctor/tools/availability/prompts.py` | `AVAILABILITY_PROMPT` — used by `intent_detector` |
+| `agent_service/graphs/doctor/tools/appointments/intents.py` | `is_schedule_view` — used by `response_generator` |
+| `agent_service/graphs/doctor/shared/prompts.py` | `DOCTOR_INTENT_PROMPT` — used by `intent_detector` |
 | `agent_service/graphs/doctor/mcp/tool_caller.py` | Doctor MCP adapter |
 | `agent_service/graphs/shared/mcp/` (all) | Shared HTTP clients |
 | `agent_service/graphs/shared/scheduling_engine/` (all) | Pure scheduling logic |
@@ -119,6 +128,8 @@ Core runtime files. Do not modify without understanding the full dependency chai
 | `agent_service/graphs/shared/normalizers/time_normalizer.py` | Time string normalization |
 | `agent_service/graphs/shared/schemas.py` | `AgentState`, `IntentSchema`, `WorkflowState` |
 | `agent_service/graphs/shared/nodes/intent_node.py` | LLM intent detection (LangGraph node) |
+| `agent_service/graphs/shared/memory_extractor.py` | Entity extraction used by doctor `MemoryNode` |
+| `agent_service/graphs/shared/llm_router.py` | httpx Groq wrapper used by doctor `IntentDetector` |
 | `agent_service/graphs/shared/trace.py` | Structured logging |
 | `agent_service/graphs/shared/formatting.py` | Response text helpers |
 | `agent_service/graphs/shared/slot_formatter.py` | Slot list formatting |
@@ -133,7 +144,7 @@ These are active but have overlap or technical debt worth addressing in a future
 
 | File | Issue |
 |------|-------|
-| `agent_service/graphs/shared/schemas.py` | `IntentSchema` (lines 48–69, dead duplicate) should be deleted; remainder is fine |
+| `agent_service/graphs/shared/schemas.py` | Clean — dead `IntentSchema` block already removed. Only `AgentState` and `IntentResult` remain. |
 | `agent_service/graphs/shared/services/scheduling/` | `AvailabilityEngine` and `AppointmentEngine` are thin I/O wrappers — could eventually be merged into a single `SchedulingService` |
 | `agent_service/graphs/patient/services/` | Multiple small service classes; some may overlap with handler logic |
 | `agent_service/graphs/shared/formatting.py` + `booking_responses.py` + `slot_formatter.py` | Three separate text-formatting modules — could be unified |
@@ -147,27 +158,80 @@ Use this checklist when executing the cleanup. Tick each file after deleting.
 ### Category A (safe, do first)
 
 ```
-[ ] graphs/patient/navigation_graph.py
-[ ] graphs/patient/nodes/executor.py
-[ ] graphs/patient/nodes/intent_detector.py
-[ ] graphs/patient/nodes/response_generator.py
-[ ] graphs/patient/nodes/tool_selector.py
-[ ] graphs/patient/tools/  (entire directory)
-[ ] graphs/patient/registries/tools_registry.py
-[ ] graphs/patient/registries/__init__.py
-[ ] graphs/patient/prompts/patient_prompts.py
-[ ] graphs/patient/prompts/__init__.py
-[ ] graphs/patient/shared/prompts.py
-[ ] graphs/patient/shared/__init__.py
-[ ] graphs/patient/actions/__init__.py
-[ ] graphs/shared/memory_extractor.py
-[ ] graphs/shared/context_recovery.py
-[ ] graphs/shared/llm_router.py
-[ ] app/memory/session_memory.py
-[ ] app/core/dependencies.py
-[ ] graphs/doctor/tools/events/tool.py
-[ ] graphs/doctor/tools/patients/tool.py
-[ ] graphs/shared/schemas.py  — delete lines 48–69 (dead IntentSchema)
+[x] graphs/patient/navigation_graph.py
+[x] graphs/patient/nodes/executor.py
+[x] graphs/patient/nodes/intent_detector.py
+[x] graphs/patient/nodes/response_generator.py
+[x] graphs/patient/nodes/tool_selector.py
+[x] graphs/patient/tools/  (entire directory)
+[x] graphs/patient/registries/tools_registry.py
+[x] graphs/patient/registries/__init__.py
+[x] graphs/patient/prompts/patient_prompts.py
+[x] graphs/patient/prompts/__init__.py
+[x] graphs/patient/shared/prompts.py
+[x] graphs/patient/shared/__init__.py
+[x] graphs/patient/actions/__init__.py
+[x] graphs/shared/context_recovery.py
+    NOTE: memory_extractor.py and llm_router.py are ACTIVE — not deleted
+[x] app/memory/session_memory.py
+[x] app/core/dependencies.py
+[x] graphs/doctor/tools/events/tool.py
+[x] graphs/doctor/tools/patients/tool.py
+[x] graphs/shared/schemas.py  — deleted lines 48–69 (dead IntentSchema)
+```
+
+### Category A — Doctor Step 1 cleanup (post-migration dead code)
+
+These files became dead when `ActionNode` replaced the old `ToolSelector → Executor → ToolsRegistry → {X}Tool → {X}Executor` dispatch chain. Import-traced and verified: nothing active references any of them.
+
+#### Dead dispatch chain (entire chain — nothing references any node in it)
+
+| File | Status | Reason |
+|------|--------|--------|
+| `graphs/doctor/nodes/tool_selector.py` | DEAD | Only caller was `navigation_graph.py`, now removed |
+| `graphs/doctor/nodes/executor.py` | DEAD | Same — and it only imported `ToolsRegistry` (also dead) |
+| `graphs/doctor/registries/tools_registry.py` | DEAD | Only imported by dead `executor.py` node |
+| `graphs/doctor/registries/__init__.py` | DEAD | Empty package stub for dead registry |
+| `graphs/doctor/tools/appointments/tool.py` | DEAD | Only imported by dead `tools_registry.py`; zero-logic pass-through |
+| `graphs/doctor/tools/availability/tool.py` | DEAD | Same |
+| `graphs/doctor/tools/appointments/executor.py` | DEAD | Only imported by dead `appointments/tool.py`; logic fully migrated to `handlers/appointments_handler.py` |
+| `graphs/doctor/tools/availability/executor.py` | DEAD | Same; logic migrated to `handlers/availability_handler.py` |
+
+#### Dead tool support files (no active callers after dispatch chain removal)
+
+| File | Status | Reason |
+|------|--------|--------|
+| `graphs/doctor/tools/appointments/schemas.py` | DEAD | `AppointmentToolInput` / `AppointmentAction` not imported by any active file |
+| `graphs/doctor/tools/availability/schemas.py` | DEAD | `AvailabilityToolInput` / `AvailabilityAction` not imported by any active file |
+| `graphs/doctor/tools/availability/intents.py` | DEAD | `is_availability_action`, `is_exception_action` not imported by any active file |
+| `graphs/doctor/actions/__init__.py` | DEAD | Empty stub, no files in directory |
+
+#### Still active inside `tools/` — DO NOT DELETE
+
+| File | Status | Active caller |
+|------|--------|--------------|
+| `graphs/doctor/tools/appointments/prompts.py` | **ACTIVE** | `nodes/intent_detector.py` imports `APPOINTMENTS_PROMPT` |
+| `graphs/doctor/tools/availability/prompts.py` | **ACTIVE** | `nodes/intent_detector.py` imports `AVAILABILITY_PROMPT` |
+| `graphs/doctor/tools/appointments/intents.py` | **ACTIVE** | `nodes/response_generator.py` imports `is_schedule_view` |
+| `graphs/doctor/shared/prompts.py` | **ACTIVE** | `nodes/intent_detector.py` imports `DOCTOR_INTENT_PROMPT` |
+
+> Note: `tools/appointments/intents.py` contains one dead function (`is_appointment_action`) alongside the active `is_schedule_view`. The file stays; the dead function is low-noise enough to leave or inline-delete later.
+
+#### Removal checklist
+
+```
+[x] graphs/doctor/nodes/tool_selector.py
+[x] graphs/doctor/nodes/executor.py
+[x] graphs/doctor/registries/tools_registry.py
+[x] graphs/doctor/registries/__init__.py
+[x] graphs/doctor/tools/appointments/tool.py
+[x] graphs/doctor/tools/availability/tool.py
+[x] graphs/doctor/tools/appointments/executor.py
+[x] graphs/doctor/tools/availability/executor.py
+[x] graphs/doctor/tools/appointments/schemas.py
+[x] graphs/doctor/tools/availability/schemas.py
+[x] graphs/doctor/tools/availability/intents.py
+[x] graphs/doctor/actions/__init__.py
 ```
 
 ### Category B (after import verification)

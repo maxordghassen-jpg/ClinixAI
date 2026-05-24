@@ -43,27 +43,3 @@ class AgentState(BaseModel):
     # Populated once per turn, never persisted to Redis, never written by StateWriterNode.
     # Used by ActionNode to distinguish "just extracted" from "loaded from Redis cache".
     extracted_this_turn: set[str] = set()
-
-
-from typing import Optional
-
-
-class IntentSchema(BaseModel):
-
-    intent: str
-
-    specialty: Optional[str] = None
-
-    doctor_name: Optional[str] = None
-
-    place_type: Optional[str] = None
-
-    date: Optional[str] = None
-
-    time: Optional[str] = None
-
-    selected_doctor_index: Optional[int] = None
-
-    query: str | None = None
-    
-    language: str | None = None

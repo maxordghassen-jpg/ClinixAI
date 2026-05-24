@@ -55,7 +55,7 @@ class MemoryNode:
         if extracted.get("patient_id"):
             extracted["last_patient_id"] = extracted["patient_id"]
 
-        # Merge into current and persist immediately (doctor pipeline has no StateWriterNode)
+        # Merge into current and persist immediately (StateWriterNode does the terminal write)
         if extracted:
             try:
                 current = await self.memory.update(state.session_id, extracted)

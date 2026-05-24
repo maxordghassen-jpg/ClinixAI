@@ -95,6 +95,8 @@ class AppointmentRepository:
         }
         if status_value == "active":
             query["status"] = {"$in": ["pending", "confirmed"]}
+        elif status_value == "all":
+            pass  # no status filter — caller wants full history
         elif status_value:
             query["status"] = status_value
 

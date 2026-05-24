@@ -158,13 +158,26 @@ class AppointmentService:
         end_date: datetime,
         status_value: str | None,
     ) -> list[dict[str, Any]]:
+        logger.info(
+            "doctor_appointments_query | doctor=%s | window=[%s, %s) | status=%s",
+            doctor_id,
+            start_date.date(),
+            end_date.date(),
+            status_value or "all",
+        )
         documents = await self.repository.list_by_date_range(
             doctor_id,
             start_date,
             end_date,
             status_value,
         )
-        return [self._serialize(document) for document in documents]
+        serialized = [self._serialize(document) for document in documents]
+        logger.info(
+            "doctor_appointments_result | doctor=%s | total=%d",
+            doctor_id,
+            len(serialized),
+        )
+        return serialized
 
     async def _list_patient_range(
         self,
