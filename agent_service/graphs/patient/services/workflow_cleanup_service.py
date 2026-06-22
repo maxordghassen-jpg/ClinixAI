@@ -43,6 +43,15 @@ class WorkflowCleanupService:
         # Reminder preference (session-scoped; stored in profile after write)
         "reminder_hours",
 
+        # Preconsultation questionnaire (all fields are session-scoped)
+        "preconsultation_done",
+        "symptom_chief_complaint",
+        "symptom_duration",
+        "symptom_severity",
+        "symptom_associated",
+        "recommended_specialty",
+        "preconsultation_summary",
+
     ]
 
     def __init__(self):

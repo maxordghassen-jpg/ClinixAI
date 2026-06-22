@@ -49,6 +49,51 @@ class PatientProfileRepository:
             return None
 
     # =========================================================================
+    # PROFILE — IDENTITY RESOLUTION
+    # Mirrors auth_service.ProfileService.resolve_patient_id: a patient's JWT
+    # may carry a slug-based id ("patient-{slug}") issued at signup, while a
+    # richer UUID-based document (created by the appointments system) already
+    # exists for the same email. Without this resolution, agent_service would
+    # read/write a different patient_profiles document than the one the
+    # "My Profile" page resolves to via auth_service.
+    # =========================================================================
+
+    async def resolve_patient_id(
+        self,
+        jwt_patient_id: str | None,
+        email: str | None,
+    ) -> str | None:
+        db = get_database()
+        if db is None:
+            return jwt_patient_id
+
+        try:
+            if jwt_patient_id and jwt_patient_id.startswith("patient-") and email:
+                email_doc = await db[self.PROFILES_COLLECTION].find_one(
+                    {"email": email.lower()}, {"_id": 0, "patient_id": 1}
+                )
+                if email_doc and email_doc.get("patient_id") != jwt_patient_id:
+                    return email_doc["patient_id"]
+
+            if jwt_patient_id:
+                existing = await db[self.PROFILES_COLLECTION].find_one(
+                    {"patient_id": jwt_patient_id}, {"_id": 0, "patient_id": 1}
+                )
+                if existing:
+                    return jwt_patient_id
+
+            if email:
+                email_doc = await db[self.PROFILES_COLLECTION].find_one(
+                    {"email": email.lower()}, {"_id": 0, "patient_id": 1}
+                )
+                if email_doc:
+                    return email_doc["patient_id"]
+        except Exception as exc:
+            logger.error(f"[PROFILE REPO] resolve_patient_id failed | jwt_id={jwt_patient_id} | {exc}")
+
+        return jwt_patient_id
+
+    # =========================================================================
     # PROFILE — UPSERT SCALAR FIELDS
     # Used for: language, reminder_preferences, stats increments
     # =========================================================================
@@ -291,6 +336,30 @@ class PatientProfileRepository:
             logger.error(f"[PROFILE REPO] cancel_reminder_job failed | appt={appointment_id} | {exc}")
 
     # =========================================================================
+    # PROFILE — RECURRING SYMPTOMS
+    # Tracks symptom keywords observed across preconsultation sessions.
+    # Uses $addToSet for deduplication — each unique symptom stored once.
+    # =========================================================================
+
+    async def add_recurring_symptom(self, patient_id: str, symptom: str) -> None:
+        db = get_database()
+        if db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            await db[self.PROFILES_COLLECTION].update_one(
+                {"patient_id": patient_id},
+                {
+                    "$addToSet": {"recurring_symptoms": symptom.lower().strip()},
+                    "$set": {"updated_at": now},
+                    "$setOnInsert": {"patient_id": patient_id, "created_at": now},
+                },
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.error(f"[PROFILE REPO] add_recurring_symptom failed | patient={patient_id} | {exc}")
+
+    # =========================================================================
     # INDEXES — called once at startup
     # =========================================================================
 
@@ -303,6 +372,26 @@ class PatientProfileRepository:
             await profiles.create_index("patient_id", unique=True)
             await profiles.create_index("preferred_specialties")
             await profiles.create_index("preferred_doctors.id")
+
+            # The legacy phone_1 index was created as a non-sparse unique index.
+            # MongoDB allows only ONE null value in a non-sparse unique index, so
+            # every second patient without a phone field fails with E11000.
+            # Fix: drop the old index and recreate as sparse+unique.
+            # Sparse means only documents that HAVE a non-null phone are indexed;
+            # documents with phone=null or no phone field are invisible to the index
+            # and coexist freely.  Existing phone values remain uniquely constrained.
+            # No data is modified — this is a pure index metadata change.
+            try:
+                await profiles.drop_index("phone_1")
+                logger.info("[PROFILE REPO] dropped legacy non-sparse phone_1 index")
+            except Exception:
+                pass  # index may not exist on a fresh deployment — safe to ignore
+            await profiles.create_index(
+                "phone",
+                unique=True,
+                sparse=True,
+                name="phone_sparse_unique",
+            )
 
             reminders = db[self.REMINDERS_COLLECTION]
             await reminders.create_index("appointment_id")

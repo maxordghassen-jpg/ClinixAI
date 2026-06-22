@@ -6,6 +6,28 @@ from graphs.shared.trace import trace
 from graphs.shared.workflow_state_cleaner import WorkflowStateCleaner
 
 
+# Steps that belong to the preconsultation questionnaire flow.
+PRECONSULTATION_FLOW_STEPS: frozenset[str] = frozenset({
+    "collecting_chief_complaint",
+    "collecting_duration",
+    "collecting_severity",
+    "collecting_associated",
+    "preconsultation_complete",
+    "awaiting_specialty_confirmation",
+})
+
+# Booking-variant preconsultation steps (Scenario 2: doctor/date/time were
+# already selected before the questionnaire runs). IntentNode forces
+# intent="preconsultation" for every ordinary reply during these steps, but
+# they are also members of BOOKING_FLOW_STEPS. That combination must not be
+# treated as a hard pivot away from booking — see _reset_booking below.
+PRECONSULTATION_BOOKING_STEPS: frozenset[str] = frozenset({
+    "collecting_chief_complaint_booking",
+    "collecting_duration_booking",
+    "collecting_severity_booking",
+    "collecting_associated_booking",
+})
+
 # Steps where ActionNode drives the logic directly.
 # WorkflowNode must not re-route these based on intent.
 ACTIVE_STEPS = {
@@ -29,11 +51,34 @@ ACTIVE_STEPS = {
     "selecting_place",           # waiting for user to pick from a geo search result list
     "awaiting_slot_selection",   # after 409: waiting for user to pick an alternative slot
     "awaiting_recovery_choice",  # after 409 + no slots: user chooses from recovery menu
+    "awaiting_availability_recovery",  # doctor has no availability schedule: guided recovery menu
+    # Availability check steps
+    "awaiting_availability_date",  # waiting for patient to name a date for availability check
+    # Preconsultation steps — ActionNode (SymptomCollectionHandler) owns these
+    "collecting_chief_complaint",
+    "collecting_duration",
+    "collecting_severity",
+    "collecting_associated",
+    "preconsultation_complete",
+    "awaiting_specialty_confirmation",
+    "collecting_chief_complaint_booking",
+    "collecting_duration_booking",
+    "collecting_severity_booking",
+    "collecting_associated_booking",
     # "selecting_doctor" is intentionally EXCLUDED:
     # when the user replies here with "1"/"2"/etc, IntentNode
     # returns intent="select_doctor" and WorkflowNode must be
     # allowed to process that and transition to "doctor_selected".
+    # "checking_availability_doctor" is intentionally EXCLUDED:
+    # WorkflowNode sets it fresh each turn from check_availability intent.
 }
+
+# Steps that belong to the geo search flow (place search → selection).
+# Used by the cross-workflow reset logic below.
+GEO_FLOW_STEPS: frozenset[str] = frozenset({
+    "searching_places",
+    "selecting_place",
+})
 
 # Steps that belong to the booking flow (doctor search → date/time → book).
 # Used by the cross-workflow reset logic below.
@@ -44,8 +89,13 @@ BOOKING_FLOW_STEPS: frozenset[str] = frozenset({
     "doctor_selected",
     "awaiting_date",
     "awaiting_time",
+    "collecting_chief_complaint_booking",
+    "collecting_duration_booking",
+    "collecting_severity_booking",
+    "collecting_associated_booking",
     "awaiting_slot_selection",  # post-409 slot recovery
     "awaiting_recovery_choice", # post-409 no-slots guided recovery menu
+    "awaiting_availability_recovery", # no availability schedule guided recovery menu
     "ready_to_book",
 })
 
@@ -85,6 +135,8 @@ _BOOKING_INCOMPATIBLE = frozenset({
     "view_appointments",
     "cancel_appointment",
     "reschedule_appointment",
+    "check_availability",   # availability check pivots away from booking
+    "preconsultation",      # symptom report must reset stale booking state
 })
 
 # Intents incompatible with an active appointment management flow.
@@ -92,6 +144,50 @@ _APPT_INCOMPATIBLE = frozenset({
     "doctor_search",
     "booking",
     "geo_search",
+    "check_availability",
+    "preconsultation",      # symptom report interrupts appointment management
+})
+
+# Steps that belong to the availability check flow.
+AVAIL_CHECK_FLOW_STEPS: frozenset[str] = frozenset({
+    "awaiting_availability_date",
+    # checking_availability_doctor is transient — not included (re-set each turn)
+})
+
+# Intents that interrupt an active availability check flow.
+_AVAIL_CHECK_INCOMPATIBLE = frozenset({
+    "booking",
+    "doctor_search",
+    "geo_search",
+    "view_appointments",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "preconsultation",      # symptom report interrupts availability check
+})
+
+# Intents that interrupt an active preconsultation questionnaire.
+# Hard pivots (booking a different flow) reset the questionnaire.
+_PRECONSULTATION_INCOMPATIBLE = frozenset({
+    "booking",
+    "doctor_search",
+    "geo_search",
+    "view_appointments",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "check_availability",
+})
+
+# Intents that must interrupt an active geo search flow.
+# Covers: user pivots from viewing place results to booking/management.
+# Also includes geo_search itself so that a new place query replaces old results.
+_GEO_INCOMPATIBLE = frozenset({
+    "booking",
+    "doctor_search",
+    "view_appointments",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "geo_search",           # new search replaces stale selecting_place results
+    "preconsultation",      # symptom report interrupts place browsing
 })
 
 
@@ -152,25 +248,63 @@ class WorkflowNode:
         _reset_booking = (
             current_step in BOOKING_FLOW_STEPS
             and intent in _BOOKING_INCOMPATIBLE
+            and not (
+                intent == "preconsultation"
+                and current_step in PRECONSULTATION_BOOKING_STEPS
+            )
         )
         _reset_appt = (
             current_step in APPOINTMENT_FLOW_STEPS
             and intent in _APPT_INCOMPATIBLE
         )
+        _reset_geo = (
+            current_step in GEO_FLOW_STEPS
+            and intent in _GEO_INCOMPATIBLE
+        )
+        _reset_avail = (
+            current_step in AVAIL_CHECK_FLOW_STEPS
+            and intent in _AVAIL_CHECK_INCOMPATIBLE
+        )
+        _reset_preconsult = (
+            current_step in PRECONSULTATION_FLOW_STEPS
+            and current_step != "awaiting_specialty_confirmation"
+            and intent in _PRECONSULTATION_INCOMPATIBLE
+        )
 
-        if _reset_booking or _reset_appt:
+        if _reset_booking or _reset_appt or _reset_geo or _reset_avail or _reset_preconsult:
+            if _reset_geo:
+                scenario = "geo→new"
+            elif _reset_booking:
+                scenario = "booking→new"
+            elif _reset_avail:
+                scenario = "avail→new"
+            elif _reset_preconsult:
+                scenario = "preconsult→new"
+            else:
+                scenario = "appt→new"
+
             trace("WORKFLOW", session_id,
                   f"cross-workflow reset | step={current_step!r} → intent={intent!r} | "
-                  f"scenario={'booking→new' if _reset_booking else 'appt→new'}")
+                  f"scenario={scenario}")
 
             cleared: list[str] = []
 
-            if _reset_booking:
+            if _reset_geo:
+                cleared += WorkflowStateCleaner.clear_geo_state(memory, session_id)
+            if _reset_booking or _reset_avail:
                 cleared += WorkflowStateCleaner.clear_full_booking_state(memory, session_id)
             if _reset_appt:
                 cleared += WorkflowStateCleaner.clear_all_appointment_state(memory, session_id)
                 # Also wipe any booking remnants in case both flows overlapped
                 cleared += WorkflowStateCleaner.clear_full_booking_state(memory, session_id)
+            if _reset_preconsult:
+                cleared += WorkflowStateCleaner.clear_preconsultation_state(memory, session_id)
+                # Wipe stale booking context so the new booking flow starts clean.
+                # Without this, leftover doctor_id/date/time from a previous session
+                # cause WorkflowNode to route straight to ready_to_book.
+                cleared += WorkflowStateCleaner.clear_full_booking_state(memory, session_id)
+                if memory.pop("query", None) is not None:
+                    cleared.append("query")
 
             # Clear the active step so routing proceeds cleanly
             if memory.pop("step", None) is not None:
@@ -228,6 +362,90 @@ class WorkflowNode:
                       f"intra-appointment reset complete — deleted from Redis: {cleared}")
 
         # =====================================================
+        # BOOKING DOCTOR-NAME OVERRIDE
+        #
+        # Scenario: workflow is paused at awaiting_specialty or
+        # searching_doctors (early doctor-discovery steps) and the
+        # user names a specific doctor in the current message.
+        #
+        # Why the guards above don't catch this:
+        #   • cross-workflow reset: intent=booking is not in
+        #     _BOOKING_INCOMPATIBLE (booking vs. booking is not a
+        #     cross-workflow switch by that logic)
+        #   • intra-appointment reset: unrelated flow
+        #
+        # Result without this fix: ACTIVE_STEPS guard fires below,
+        # returns early, ActionNode re-asks "Quel médecin ?" — wrong.
+        #
+        # Fix: if doctor_name was freshly extracted this turn
+        # (∈ extracted_this_turn), clear the stale step from memory
+        # and Redis so normal routing proceeds.  The booking branch
+        # then routes to searching_doctors (doctor_name is the query).
+        # =====================================================
+
+        fresh = getattr(state, "extracted_this_turn", set())
+        _reset_for_doctor_name = (
+            intent == "booking"
+            and "doctor_name" in fresh
+            and current_step in {"awaiting_specialty", "searching_doctors"}
+        )
+
+        if _reset_for_doctor_name:
+            trace("WORKFLOW", session_id,
+                  f"doctor-name override | step={current_step!r} cleared "
+                  f"→ will route to searching_doctors | "
+                  f"doctor_name={memory.get('doctor_name')!r}")
+            if memory.pop("step", None) is not None:
+                await self._redis.delete_keys(session_id, ["step"])
+            current_step = None  # skip ACTIVE_STEPS guard below
+
+        # =====================================================
+        # STALE DOCTOR-ID GUARD
+        # When a NEW doctor_name is extracted this turn and a
+        # doctor_id from a PREVIOUS booking already lives in
+        # Redis, the booking branch would skip searching_doctors
+        # and proceed straight to awaiting_date with the wrong
+        # doctor.  Clear the stale ID (and related search state)
+        # so the booking branch always runs a fresh name search.
+        #
+        # Guard: doctor_id NOT in fresh_fields — if the caller
+        # supplied an explicit ID in the same message (e.g.
+        # "Book with Dr X, ID: doc-123") that ID is intentional
+        # and must be preserved.
+        # =====================================================
+
+        if intent == "booking" and "doctor_name" in fresh:
+            _stale_id = memory.get("doctor_id")
+            if _stale_id and "doctor_id" not in fresh:
+                trace("WORKFLOW", session_id,
+                      f"stale doctor_id guard | "
+                      f"prev_doctor_id={_stale_id!r} "
+                      f"new_doctor_name={memory.get('doctor_name')!r} | "
+                      f"clearing doctor_id, doctor_results, selected_doctor_index")
+                for _k in ("doctor_id", "doctor_results", "selected_doctor_index"):
+                    memory.pop(_k, None)
+                await self._redis.delete_keys(
+                    session_id,
+                    ["doctor_id", "doctor_results", "selected_doctor_index"],
+                )
+
+        if current_step == "preconsultation_complete" and memory.get("preconsultation_done"):
+            memory["step"] = "awaiting_specialty_confirmation"
+            current_step = "awaiting_specialty_confirmation"
+            trace("WORKFLOW", session_id,
+                  "transition: preconsultation_complete -> awaiting_specialty_confirmation")
+
+        if (
+            current_step == "awaiting_specialty_confirmation"
+            and intent == "booking"
+            and memory.get("specialty")
+        ):
+            memory["step"] = "searching_doctors"
+            current_step = "searching_doctors"
+            trace("WORKFLOW", session_id,
+                  "transition: awaiting_specialty_confirmation -> searching_doctors")
+
+        # =====================================================
         # ACTIVE WORKFLOW GUARD
         # If the session is already mid-flight, leave the step
         # untouched. ActionNode handles these steps directly.
@@ -259,7 +477,19 @@ class WorkflowNode:
 
         if intent == "doctor_search":
             if doctor_id:
-                new_step = "awaiting_date" if not date else ("awaiting_time" if not time_value else "ready_to_book")
+                new_step = (
+                    "awaiting_date"
+                    if not date
+                    else (
+                        "awaiting_time"
+                        if not time_value
+                        else (
+                            "ready_to_book"
+                            if memory.get("preconsultation_done")
+                            else "collecting_chief_complaint_booking"
+                        )
+                    )
+                )
             else:
                 new_step = "searching_doctors"
             trace("WORKFLOW", session_id,
@@ -280,17 +510,30 @@ class WorkflowNode:
         # =====================================================
 
         elif intent == "booking":
-            if not doctor_id:
-                new_step = "searching_doctors" if specialty else "awaiting_specialty"
-            elif not date:
-                new_step = "awaiting_date"
-            elif not time_value:
-                new_step = "awaiting_time"
+            if doctor_id:
+                # ID already resolved — skip search entirely
+                if not date:
+                    new_step = "awaiting_date"
+                elif not time_value:
+                    new_step = "awaiting_time"
+                else:
+                    new_step = (
+                        "ready_to_book"
+                        if memory.get("preconsultation_done")
+                        else "collecting_chief_complaint_booking"
+                    )
+            elif memory.get("doctor_name"):
+                # Doctor named but no ID yet — search by name; _searching_doctors
+                # uses doctor_name as query, auto-selects on a unique match.
+                new_step = "searching_doctors"
+            elif specialty:
+                new_step = "searching_doctors"
             else:
-                new_step = "ready_to_book"
+                new_step = "awaiting_specialty"
             trace("WORKFLOW", session_id,
                   f"step: {current_step!r} → {new_step!r} | intent=booking "
-                  f"| doctor_id={bool(doctor_id)} date={bool(date)} time={bool(time_value)}")
+                  f"| doctor_id={bool(doctor_id)} doctor_name={memory.get('doctor_name')!r} "
+                  f"specialty={bool(specialty)} date={bool(date)} time={bool(time_value)}")
             memory["step"] = new_step
 
         # =====================================================
@@ -367,6 +610,50 @@ class WorkflowNode:
             trace("WORKFLOW", session_id,
                   f"step: {current_step!r} → 'searching_places' | intent=geo_search")
             memory["step"] = "searching_places"
+
+        # =====================================================
+        # CHECK AVAILABILITY (specific doctor + date)
+        # =====================================================
+
+        elif intent == "check_availability":
+            trace("WORKFLOW", session_id,
+                  f"step: {current_step!r} → 'checking_availability_doctor' | "
+                  f"intent=check_availability | "
+                  f"doctor_name={memory.get('doctor_name')!r} date={memory.get('date')!r}")
+            memory["step"] = "checking_availability_doctor"
+
+        # =====================================================
+        # PRECONSULTATION
+        # Start the symptom questionnaire unless one is already
+        # complete for this session (preconsultation_done=True).
+        # =====================================================
+
+        elif intent == "preconsultation":
+            if memory.get("preconsultation_done"):
+                # Already completed this session — just acknowledge
+                trace("WORKFLOW", session_id,
+                      f"preconsultation already done this session — idle")
+                memory["step"] = "idle"
+            elif doctor_id and date and time_value:
+                # Booking already resolved (doctor + date + time set) before
+                # this symptom report — use the "_booking" variant so
+                # completing the questionnaire routes straight to
+                # ready_to_book, preserving the selected doctor/date/time
+                # instead of restarting via awaiting_specialty_confirmation
+                # → searching_doctors.
+                new_step = "collecting_chief_complaint_booking"
+                trace("WORKFLOW", session_id,
+                      f"step: {current_step!r} → {new_step!r} | intent=preconsultation "
+                      f"(doctor_id/date/time already set — booking variant)")
+                memory["step"] = new_step
+            else:
+                new_step = memory.get("step") or "collecting_chief_complaint"
+                # If we're not already in the middle of collection, start fresh
+                if new_step not in PRECONSULTATION_FLOW_STEPS:
+                    new_step = "collecting_chief_complaint"
+                trace("WORKFLOW", session_id,
+                      f"step: {current_step!r} → {new_step!r} | intent=preconsultation")
+                memory["step"] = new_step
 
         # =====================================================
         # CANCEL (legacy — kept for backward compat, maps to same flow)

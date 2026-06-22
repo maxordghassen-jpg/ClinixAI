@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.database.connection import get_client
 from app.repositories.appointment_repository import AppointmentRepository, ACTIVE_STATUSES
 from app.schemas.appointment_schema import ReservationCreate, ReservationReschedule
 
@@ -172,6 +173,7 @@ class AppointmentService:
             status_value,
         )
         serialized = [self._serialize(document) for document in documents]
+        serialized = await self._enrich_appointments(serialized)
         logger.info(
             "doctor_appointments_result | doctor=%s | total=%d",
             doctor_id,
@@ -209,6 +211,7 @@ class AppointmentService:
             status_value,
         )
         serialized = [self._serialize(document) for document in documents]
+        serialized = await self._enrich_appointments(serialized)
 
         # Status distribution for observability
         dist = dict(Counter(a["status"] for a in serialized))
@@ -254,6 +257,116 @@ class AppointmentService:
 
     def _start_of_day(self, date_value: datetime) -> datetime:
         return datetime.combine(date_value.date(), time.min, tzinfo=timezone.utc)
+
+    async def _enrich_appointments(
+        self,
+        appointments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Resolve missing patient_name, doctor_name, specialty from profile databases.
+
+        AI-booked appointments are stored with only doctor_id and patient_id.
+        This method batch-fetches the human-readable names so the UI can display
+        them instead of raw IDs.
+        """
+        mongo = get_client()
+        if not mongo or not appointments:
+            return appointments
+
+        missing_patient_ids = {
+            a["patient_id"]
+            for a in appointments
+            if not a.get("patient_name") and a.get("patient_id")
+        }
+        missing_doctor_ids = {
+            a["doctor_id"]
+            for a in appointments
+            if (not a.get("doctor_name") or not a.get("specialty")) and a.get("doctor_id")
+        }
+
+        patient_map: dict[str, str] = {}
+        if missing_patient_ids:
+            cursor = mongo["clinix_agent"]["patient_profiles"].find(
+                {"patient_id": {"$in": list(missing_patient_ids)}},
+                {"patient_id": 1, "name": 1, "_id": 0},
+            )
+            async for doc in cursor:
+                if doc.get("name"):
+                    patient_map[doc["patient_id"]] = doc["name"]
+
+            # patient_profiles documents often have no "name" field. Fall back
+            # to clinix_agent.users, which links patient_profile_id -> name.
+            unresolved_ids = [pid for pid in missing_patient_ids if pid not in patient_map]
+            if unresolved_ids:
+                cursor = mongo["clinix_agent"]["users"].find(
+                    {"patient_profile_id": {"$in": unresolved_ids}, "role": "patient"},
+                    {"patient_profile_id": 1, "name": 1, "_id": 0},
+                )
+                async for doc in cursor:
+                    if doc.get("name") and doc.get("patient_profile_id"):
+                        patient_map[doc["patient_profile_id"]] = doc["name"]
+
+        # doctor_id in the appointment is the MongoDB _id of the doctor document
+        # (stored as a 24-char hex string). clinix_agent.users has a doctor_id
+        # string field that matches, providing the clean display name.
+        # Specialty comes from medical_data_tunisia.doctors via ObjectId _id lookup.
+        doctor_map: dict[str, dict[str, str]] = {}
+        if missing_doctor_ids:
+            from bson import ObjectId
+
+            # Pass 1: name from clinix_agent.users (doctor_id string field)
+            cursor = mongo["clinix_agent"]["users"].find(
+                {"doctor_id": {"$in": list(missing_doctor_ids)}, "role": "doctor"},
+                {"doctor_id": 1, "name": 1, "_id": 0},
+            )
+            async for doc in cursor:
+                if doc.get("doctor_id"):
+                    doctor_map[doc["doctor_id"]] = {
+                        "name":      doc.get("name", ""),
+                        "specialty": "",
+                    }
+
+            # Pass 2: specialty from medical_data_tunisia.doctors (_id ObjectId)
+            valid_oids = []
+            for did in missing_doctor_ids:
+                try:
+                    valid_oids.append(ObjectId(did))
+                except Exception:
+                    pass
+            if valid_oids:
+                cursor = mongo["medical_data_tunisia"]["doctors"].find(
+                    {"_id": {"$in": valid_oids}},
+                    {"specialty": 1},
+                )
+                async for doc in cursor:
+                    did = str(doc["_id"])
+                    specialty = doc.get("specialty", "")
+                    if did in doctor_map:
+                        doctor_map[did]["specialty"] = specialty
+                    else:
+                        doctor_map[did] = {"name": "", "specialty": specialty}
+
+        for apt in appointments:
+            if not apt.get("patient_name"):
+                pid = apt.get("patient_id", "")
+                resolved_name = patient_map.get(pid) or pid
+                apt["patient_name"] = resolved_name
+                logger.info("[DOCTOR-APPT] patient_id=%r resolved_name=%r", pid, resolved_name)
+
+            if apt.get("doctor_id") in doctor_map:
+                info = doctor_map[apt["doctor_id"]]
+                if not apt.get("doctor_name") and info["name"]:
+                    apt["doctor_name"] = info["name"]
+                if not apt.get("specialty") and info["specialty"]:
+                    apt["specialty"] = info["specialty"]
+
+        logger.info(
+            "enrich_appointments | resolved_patients=%d/%d resolved_doctors=%d/%d",
+            len(patient_map),
+            len(missing_patient_ids),
+            len(doctor_map),
+            len(missing_doctor_ids),
+        )
+        return appointments
 
     def _serialize(self, document: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {

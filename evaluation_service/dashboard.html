@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClinixAI — Évaluation LLM-as-Judge</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  :root {
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --surface2: #f1f5f9;
+    --border: #e2e8f0;
+    --accent: #2563eb;
+    --green: #16a34a;
+    --green-bg: #dcfce7;
+    --yellow: #ca8a04;
+    --yellow-bg: #fef9c3;
+    --red: #dc2626;
+    --red-bg: #fee2e2;
+    --blue-bg: #dbeafe;
+    --purple: #7c3aed;
+    --purple-bg: #ede9fe;
+    --orange: #ea580c;
+    --orange-bg: #ffedd5;
+    --teal: #0d9488;
+    --teal-bg: #ccfbf1;
+    --text: #0f172a;
+    --muted: #64748b;
+    --font: 'Plus Jakarta Sans', sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── HEADER ── */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky; top:0; z-index:10;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .header-left { display:flex; align-items:center; gap:14px; }
+  .logo {
+    width:42px; height:42px;
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
+    border-radius:10px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:20px;
+    box-shadow: 0 2px 8px rgba(37,99,235,0.3);
+  }
+  .header h1 { font-size:17px; font-weight:700; color:var(--text); }
+  .header p  { font-size:12px; color:var(--muted); margin-top:2px; }
+  .status {
+    display:flex; align-items:center; gap:6px;
+    font-size:12px; color:var(--green);
+    background: var(--green-bg);
+    padding: 5px 12px; border-radius:20px;
+    font-weight:500;
+  }
+  .dot { width:7px;height:7px;border-radius:50%;background:var(--green);
+         animation: pulse 2s infinite; flex-shrink:0; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ── MAIN ── */
+  .main { padding: 32px 40px; max-width: 1440px; margin: 0 auto; }
+
+  /* ── SECTION TITLE ── */
+  .section-title {
+    font-size:11px; font-weight:700; letter-spacing:2.5px;
+    text-transform:uppercase; color:var(--muted);
+    margin-bottom:14px; margin-top:36px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .section-title::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  /* ── GLOBAL STATS ── */
+  .stats-grid {
+    display:grid; grid-template-columns: repeat(4, 1fr); gap:14px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius:12px;
+    padding:20px 22px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .stat-label { font-size:11px; font-weight:600; letter-spacing:1px;
+    text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+  .stat-value { font-size:34px; font-weight:700; font-family:var(--mono); line-height:1; }
+  .stat-sub   { font-size:11px; color:var(--muted); margin-top:6px; }
+
+  /* ── LLM JUDGE METRICS GRID ── */
+  .metrics-grid {
+    display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius:12px;
+    padding:20px 22px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .metric-tag {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:10px; font-weight:700; letter-spacing:1px;
+    text-transform:uppercase; padding:3px 10px;
+    border-radius:4px; margin-bottom:10px;
+  }
+  .metric-name { font-size:15px; font-weight:700; margin-bottom:4px; }
+  .metric-why  { font-size:11px; color:var(--muted); margin-bottom:16px; line-height:1.6; }
+  .metric-score-box {
+    padding:14px 18px; border-radius:10px;
+    margin-bottom:14px;
+  }
+  .metric-score {
+    font-size:44px; font-weight:700; font-family:var(--mono); line-height:1;
+  }
+  .metric-score-sub { font-size:11px; margin-top:4px; font-weight:500; }
+
+  /* Color themes per metric */
+  .m-safe   .metric-tag { background:var(--green-bg);  color:var(--green); }
+  .m-safe   .metric-score-box { background:var(--green-bg); }
+  .m-safe   .metric-score { color:var(--green); }
+  .m-safe   .metric-score-sub { color:var(--green); }
+
+  .m-hal    .metric-tag { background:var(--yellow-bg); color:var(--yellow); }
+  .m-hal    .metric-score-box { background:var(--yellow-bg); }
+  .m-hal    .metric-score { color:var(--yellow); }
+  .m-hal    .metric-score-sub { color:var(--yellow); }
+
+  .m-relev  .metric-tag { background:var(--blue-bg);   color:var(--accent); }
+  .m-relev  .metric-score-box { background:var(--blue-bg); }
+  .m-relev  .metric-score { color:var(--accent); }
+  .m-relev  .metric-score-sub { color:var(--accent); }
+
+  .m-corr   .metric-tag { background:var(--purple-bg); color:var(--purple); }
+  .m-corr   .metric-score-box { background:var(--purple-bg); }
+  .m-corr   .metric-score { color:var(--purple); }
+  .m-corr   .metric-score-sub { color:var(--purple); }
+
+  .m-gnd    .metric-tag { background:var(--orange-bg); color:var(--orange); }
+  .m-gnd    .metric-score-box { background:var(--orange-bg); }
+  .m-gnd    .metric-score { color:var(--orange); }
+  .m-gnd    .metric-score-sub { color:var(--orange); }
+
+  .m-wf     .metric-tag { background:var(--teal-bg);   color:var(--teal); }
+  .m-wf     .metric-score-box { background:var(--teal-bg); }
+  .m-wf     .metric-score { color:var(--teal); }
+  .m-wf     .metric-score-sub { color:var(--teal); }
+
+  /* Detail rows inside metric cards */
+  .detail-rows { display:flex; flex-direction:column; gap:8px; }
+  .detail-row {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:8px 12px;
+    background:var(--surface2); border-radius:8px;
+    font-size:12px;
+  }
+  .detail-row-label { color:var(--muted); font-weight:500; }
+  .detail-row-val   { font-family:var(--mono); font-weight:600; font-size:13px; }
+
+  /* ── MULTILINGUAL ── */
+  .lang-grid {
+    display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;
+  }
+  .lang-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius:12px;
+    padding:20px 22px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .lang-header {
+    display:flex; align-items:center; gap:12px; margin-bottom:16px;
+    padding-bottom:14px; border-bottom:1px solid var(--border);
+  }
+  .lang-flag { font-size:26px; }
+  .lang-name { font-size:16px; font-weight:700; }
+  .lang-runs { font-size:11px; color:var(--muted); margin-top:2px; }
+  .lang-metrics { display:flex; flex-direction:column; gap:8px; }
+  .lang-row {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:7px 10px; background:var(--surface2); border-radius:8px;
+    font-size:12px;
+  }
+  .lang-row-label { color:var(--muted); font-weight:500; }
+  .lang-row-val   { font-family:var(--mono); font-weight:700; font-size:13px; }
+
+  /* ── TABLE ── */
+  .table-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  thead th {
+    background:var(--surface2);
+    padding:11px 16px; text-align:left;
+    font-size:10px; font-weight:700; letter-spacing:1.2px;
+    text-transform:uppercase; color:var(--muted);
+    border-bottom:2px solid var(--border);
+    white-space:nowrap;
+  }
+  tbody tr { border-bottom:1px solid var(--border); transition:background 0.1s; }
+  tbody tr:last-child { border-bottom:none; }
+  tbody tr:hover { background:var(--surface2); }
+  tbody td { padding:10px 16px; }
+  td.t-id   { font-weight:700; font-size:12px; color:var(--text); white-space:nowrap; }
+  td.t-lang { font-size:12px; color:var(--muted); }
+  td.t-role { font-size:12px; color:var(--muted); }
+  td.t-score { font-family:var(--mono); font-weight:600; font-size:13px; text-align:center; }
+  .sc-g { color:var(--green); }
+  .sc-y { color:var(--yellow); }
+  .sc-r { color:var(--red); }
+  .sc-na{ color:#cbd5e1; }
+
+  .badge {
+    display:inline-flex; align-items:center;
+    padding:3px 9px; border-radius:5px;
+    font-size:10px; font-weight:700; text-transform:uppercase;
+    white-space:nowrap;
+  }
+  .b-wf   { background:#dcfce7; color:#15803d; }
+  .b-safe { background:#fee2e2; color:#b91c1c; }
+  .b-hal  { background:#fef9c3; color:#a16207; }
+  .b-mem  { background:#ede9fe; color:#6d28d9; }
+  .b-pre  { background:#dbeafe; color:#1d4ed8; }
+  .b-ml   { background:#ffedd5; color:#c2410c; }
+  .b-vo   { background:#f1f5f9; color:#475569; }
+  .b-rec  { background:#fce7f3; color:#be185d; }
+
+  /* ── FILTERS ── */
+  .filters { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  select {
+    background:var(--surface); border:1px solid var(--border);
+    color:var(--text); padding:7px 12px; border-radius:8px;
+    font-size:12px; font-family:var(--font); cursor:pointer; outline:none;
+    font-weight:500;
+  }
+  select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(37,99,235,0.1); }
+
+  /* ── ERROR ── */
+  .error-banner {
+    background:#fee2e2; border:1px solid #fca5a5;
+    border-radius:10px; padding:16px 20px; margin-bottom:20px;
+    color:#991b1b; font-size:13px; display:none;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo">🧠</div>
+    <div>
+      <h1>ClinixAI — Évaluation LLM-as-Judge</h1>
+      <p>Groq · llama-3.3-70b-versatile · 42 scénarios · EN / FR / AR</p>
+    </div>
+  </div>
+  <div class="status" id="statusBadge">
+    <div class="dot"></div>
+    Chargement...
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="error-banner" id="errorBanner">
+    &#9888;&#65039; Impossible de se connecter à l'API. Vérifiez que le service tourne sur
+    <strong>http://127.0.0.1:8007</strong>
+  </div>
+
+  <!-- STATS GLOBALES -->
+  <div class="section-title">Résultats globaux</div>
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total évaluations</div>
+      <div class="stat-value" id="sTotalRuns" style="color:var(--accent)">—</div>
+      <div class="stat-sub">scénarios évalués</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Score global moyen</div>
+      <div class="stat-value" id="sOverall" style="color:var(--accent)">—</div>
+      <div class="stat-sub">tous scénarios confondus</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Sécurité médicale</div>
+      <div class="stat-value" id="sSafety" style="color:var(--green)">—</div>
+      <div class="stat-sub">frontière clinique critique</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Risque hallucination</div>
+      <div class="stat-value" id="sHal" style="color:var(--yellow)">—</div>
+      <div class="stat-sub">0 = sûr · 1 = risqué</div>
+    </div>
+  </div>
+
+  <!-- GROUPE 1 — LLM-AS-JUDGE -->
+  <div class="section-title">Groupe 1 — LLM-as-Judge (métriques principales)</div>
+  <div class="metrics-grid">
+
+    <!-- Safety -->
+    <div class="metric-card m-safe">
+      <div class="metric-tag">🛡 Safety Score</div>
+      <div class="metric-name">Sécurité médicale</div>
+      <div class="metric-why">L'agent est MÉDICAL — une mauvaise information peut mettre le patient en danger. Métrique la plus critique du projet.</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mSafety">—</div>
+        <div class="metric-score-sub">score moyen · échelle 0.0 → 1.0</div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Workflow</span>
+          <span class="detail-row-val sc-g" id="mSafetyWF">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Safety</span>
+          <span class="detail-row-val sc-g" id="mSafetySAFE">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Préconsultation</span>
+          <span class="detail-row-val sc-g" id="mSafetyPRE">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hallucination -->
+    <div class="metric-card m-hal">
+      <div class="metric-tag">🔍 Hallucination Risk</div>
+      <div class="metric-name">Risque d'hallucination</div>
+      <div class="metric-why">L'agent ne doit pas inventer des médecins, créneaux ou médicaments qui n'existent pas dans la base de données.</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mHal">—</div>
+        <div class="metric-score-sub">score moyen · 0 = aucune hallucination</div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Hallucination</span>
+          <span class="detail-row-val" id="mHalHAL">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Workflow</span>
+          <span class="detail-row-val" id="mHalWF">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Memory</span>
+          <span class="detail-row-val" id="mHalMEM">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Relevancy -->
+    <div class="metric-card m-relev">
+      <div class="metric-tag">🎯 Answer Relevancy</div>
+      <div class="metric-name">Pertinence des réponses</div>
+      <div class="metric-why">L'agent répond-il vraiment à la question posée ? "cherche un cardiologue" → doit retourner des cardiologues, pas une réponse générique.</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mRelev">—</div>
+        <div class="metric-score-sub">score moyen · 0 = hors sujet · 1 = parfait</div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Workflow</span>
+          <span class="detail-row-val" id="mRelevWF">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Safety</span>
+          <span class="detail-row-val" id="mRelevSAFE">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Memory</span>
+          <span class="detail-row-val" id="mRelevMEM">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Correctness -->
+    <div class="metric-card m-corr">
+      <div class="metric-tag">✅ Answer Correctness</div>
+      <div class="metric-name">Exactitude des réponses</div>
+      <div class="metric-why">Les informations retournées sont-elles exactes ? Les médecins, créneaux et informations médicales sont-ils réels et vérifiables ?</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mCorr">—</div>
+        <div class="metric-score-sub">score moyen · 0 = incorrect · 1 = exact</div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Workflow</span>
+          <span class="detail-row-val" id="mCorrWF">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Hallucination</span>
+          <span class="detail-row-val" id="mCorrHAL">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Safety</span>
+          <span class="detail-row-val" id="mCorrSAFE">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Groundedness -->
+    <div class="metric-card m-gnd">
+      <div class="metric-tag">📎 Groundedness</div>
+      <div class="metric-name">Fidélité / Faithfulness</div>
+      <div class="metric-why">L'agent utilise-t-il correctement le contexte RAG mémoriel ? C'est la contribution principale de ClinixAI — la personnalisation par mémoire comportementale.</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mGnd">—</div>
+        <div class="metric-score-sub">score moyen · 0 = ignore contexte · 1 = ancré</div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Workflow</span>
+          <span class="detail-row-val" id="mGndWF">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Scénarios Memory</span>
+          <span class="detail-row-val" id="mGndMEM">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Préconsultation</span>
+          <span class="detail-row-val" id="mGndPRE">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workflow -->
+    <div class="metric-card m-wf">
+      <div class="metric-tag">⚙️ Workflow Score</div>
+      <div class="metric-name">Score des workflows</div>
+      <div class="metric-why">Les workflows complexes se terminent-ils correctement ? Réservation (5 tours), annulation, préconsultation (4 questions). Taux de succès binaire inclus.</div>
+      <div class="metric-score-box">
+        <div class="metric-score" id="mWF">—</div>
+        <div class="metric-score-sub">score moyen · taux succès : <span id="mWFSuccessInline">—</span></div>
+      </div>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-row-label">Taux de succès (binaire)</span>
+          <span class="detail-row-val" id="mWFSuccess">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Agent Patient</span>
+          <span class="detail-row-val" id="mWFPatient">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-row-label">Agent Médecin</span>
+          <span class="detail-row-val" id="mWFDoctor">—</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- GROUPE 3 — MULTILINGUE -->
+  <div class="section-title">Groupe 3 — Performance multilingue (FR / EN / AR)</div>
+  <div class="lang-grid" id="langGrid"></div>
+
+  <!-- TABLEAU COMPLET -->
+  <div class="section-title">Tous les résultats par scénario</div>
+  <div class="filters">
+    <select id="filterCat" onchange="renderTable()">
+      <option value="">Toutes les catégories</option>
+      <option value="workflow">Workflow</option>
+      <option value="safety">Safety</option>
+      <option value="hallucination">Hallucination</option>
+      <option value="memory">Memory</option>
+      <option value="preconsultation">Préconsultation</option>
+      <option value="multilingual">Multilingue</option>
+      <option value="voice">Voice</option>
+      <option value="recommendation">Recommendation</option>
+    </select>
+    <select id="filterLang" onchange="renderTable()">
+      <option value="">Toutes les langues</option>
+      <option value="english">English</option>
+      <option value="french">French</option>
+      <option value="arabic">Arabic</option>
+    </select>
+    <select id="filterRole" onchange="renderTable()">
+      <option value="">Tous les rôles</option>
+      <option value="patient">Patient</option>
+      <option value="doctor">Médecin</option>
+    </select>
+  </div>
+
+  <div class="table-container">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Scénario</th>
+            <th>Catégorie</th>
+            <th>Langue</th>
+            <th>Rôle</th>
+            <th>Safety</th>
+            <th>Hal. Risk</th>
+            <th>Relevancy</th>
+            <th>Correctness</th>
+            <th>Groundedness</th>
+            <th>Workflow</th>
+            <th>WF Success</th>
+            <th>Overall</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = 'http://127.0.0.1:8007';
+let allResults = [];
+
+const CAT_MAP = {
+  'WFLOW':'workflow','DOC':'workflow','SAFE':'safety',
+  'HAL':'hallucination','MEM':'memory','PRECONSULT':'preconsultation',
+  'ML':'multilingual','VOICE':'voice','REC':'recommendation'
+};
+function getCat(id) {
+  for (const [p,c] of Object.entries(CAT_MAP)) if (id.startsWith(p)) return c;
+  return 'other';
+}
+
+function avg(arr, key) {
+  const v = arr.map(r=>r[key]).filter(x=>x!==null&&x!==undefined&&!isNaN(x));
+  return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;
+}
+
+function colorVal(v) {
+  if (v===null||v===undefined) return '<span class="sc-na">&#8212;</span>';
+  const n = parseFloat(v);
+  const cls = n>=0.75?'sc-g':n>=0.50?'sc-y':'sc-r';
+  return `<span class="${cls}">${n.toFixed(2)}</span>`;
+}
+
+function fmtScore(v) {
+  if (v===null||v===undefined) return '&#8212;';
+  const n = parseFloat(v);
+  const col = n>=0.75?'var(--green)':n>=0.50?'var(--yellow)':'var(--red)';
+  return `<span style="color:${col};font-weight:700">${n.toFixed(2)}</span>`;
+}
+
+function set(id, val) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = fmtScore(val);
+}
+
+function badgeCat(cat) {
+  const m = {
+    workflow:'b-wf',safety:'b-safe',hallucination:'b-hal',
+    memory:'b-mem',preconsultation:'b-pre',multilingual:'b-ml',
+    voice:'b-vo',recommendation:'b-rec'
+  };
+  return `<span class="badge ${m[cat]||''}">${cat}</span>`;
+}
+
+async function loadData() {
+  try {
+    const r = await fetch(`${API}/results?limit=200`);
+    if (!r.ok) throw new Error(r.status);
+    allResults = await r.json();
+    allResults.forEach(row => { row._cat = getCat(row.scenario_id||''); });
+
+    document.getElementById('statusBadge').innerHTML =
+      `<div class="dot"></div> Connecté · ${allResults.length} résultats`;
+    document.getElementById('errorBanner').style.display = 'none';
+
+    updateStats();
+    updateMetrics();
+    updateLang();
+    renderTable();
+  } catch(e) {
+    document.getElementById('statusBadge').style.cssText =
+      'background:#fee2e2;color:#dc2626;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px;';
+    document.getElementById('statusBadge').innerHTML = '&#9888; Non connecté';
+    document.getElementById('errorBanner').style.display = 'block';
+  }
+}
+
+function updateStats() {
+  document.getElementById('sTotalRuns').textContent = allResults.length;
+  const ov = avg(allResults,'overall_score');
+  const sf = avg(allResults,'safety_score');
+  const hl = avg(allResults,'hallucination_risk');
+  document.getElementById('sOverall').textContent = ov ? ov.toFixed(2) : '&#8212;';
+  document.getElementById('sSafety').textContent  = sf ? sf.toFixed(2) : '&#8212;';
+  document.getElementById('sHal').textContent     = hl ? hl.toFixed(2) : '&#8212;';
+}
+
+function updateMetrics() {
+  const byCat = {};
+  allResults.forEach(r => {
+    const c = r._cat||'other';
+    if (!byCat[c]) byCat[c]=[];
+    byCat[c].push(r);
+  });
+  const wf = s => byCat[s]||[];
+
+  set('mSafety',     avg(allResults,'safety_score'));
+  set('mSafetyWF',   avg(wf('workflow'),'safety_score'));
+  set('mSafetySAFE', avg(wf('safety'),'safety_score'));
+  set('mSafetyPRE',  avg(wf('preconsultation'),'safety_score'));
+
+  set('mHal',    avg(allResults,'hallucination_risk'));
+  set('mHalHAL', avg(wf('hallucination'),'hallucination_risk'));
+  set('mHalWF',  avg(wf('workflow'),'hallucination_risk'));
+  set('mHalMEM', avg(wf('memory'),'hallucination_risk'));
+
+  set('mRelev',     avg(allResults,'answer_relevancy_judge'));
+  set('mRelevWF',   avg(wf('workflow'),'answer_relevancy_judge'));
+  set('mRelevSAFE', avg(wf('safety'),'answer_relevancy_judge'));
+  set('mRelevMEM',  avg(wf('memory'),'answer_relevancy_judge'));
+
+  set('mCorr',     avg(allResults,'answer_correctness_judge'));
+  set('mCorrWF',   avg(wf('workflow'),'answer_correctness_judge'));
+  set('mCorrHAL',  avg(wf('hallucination'),'answer_correctness_judge'));
+  set('mCorrSAFE', avg(wf('safety'),'answer_correctness_judge'));
+
+  set('mGnd',    avg(allResults,'groundedness_score'));
+  set('mGndWF',  avg(wf('workflow'),'groundedness_score'));
+  set('mGndMEM', avg(wf('memory'),'groundedness_score'));
+  set('mGndPRE', avg(wf('preconsultation'),'groundedness_score'));
+
+  const wfRows  = allResults.filter(r=>r.workflow_score!=null);
+  const wfsRows = allResults.filter(r=>r.workflow_success_rate!=null);
+  const pts = allResults.filter(r=>r.role==='patient'&&r.workflow_score!=null);
+  const drs = allResults.filter(r=>r.role==='doctor'&&r.workflow_score!=null);
+  set('mWF',        avg(wfRows,'workflow_score'));
+  set('mWFSuccess', avg(wfsRows,'workflow_success_rate'));
+  set('mWFPatient', avg(pts,'workflow_score'));
+  set('mWFDoctor',  avg(drs,'workflow_score'));
+  const wfsVal = avg(wfsRows,'workflow_success_rate');
+  const el = document.getElementById('mWFSuccessInline');
+  if (el) el.innerHTML = fmtScore(wfsVal);
+}
+
+function updateLang() {
+  const langs = [
+    {code:'french', flag:'🇫🇷', name:'Français'},
+    {code:'english',flag:'🇬🇧', name:'English'},
+    {code:'arabic', flag:'🇸🇦', name:'Arabic / عربي'},
+  ];
+  document.getElementById('langGrid').innerHTML = langs.map(({code,flag,name})=>{
+    const sub = allResults.filter(r=>r.language===code);
+    const metrics = [
+      {label:'Safety',      key:'safety_score'},
+      {label:'Hal. Risk',   key:'hallucination_risk'},
+      {label:'Relevancy',   key:'answer_relevancy_judge'},
+      {label:'Correctness', key:'answer_correctness_judge'},
+      {label:'Groundedness',key:'groundedness_score'},
+      {label:'Overall',     key:'overall_score'},
+    ];
+    const rows = metrics.map(m=>{
+      const v = avg(sub,m.key);
+      return `<div class="lang-row">
+        <span class="lang-row-label">${m.label}</span>
+        <span class="lang-row-val">${fmtScore(v)}</span>
+      </div>`;
+    }).join('');
+    return `<div class="lang-card">
+      <div class="lang-header">
+        <span class="lang-flag">${flag}</span>
+        <div>
+          <div class="lang-name">${name}</div>
+          <div class="lang-runs">${sub.length} évaluation${sub.length>1?'s':''}</div>
+        </div>
+      </div>
+      <div class="lang-metrics">${rows}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderTable() {
+  const cat  = document.getElementById('filterCat').value;
+  const lang = document.getElementById('filterLang').value;
+  const role = document.getElementById('filterRole').value;
+  let rows = allResults.filter(r=>{
+    if (cat  && r._cat!==cat) return false;
+    if (lang && r.language!==lang) return false;
+    if (role && r.role!==role) return false;
+    return true;
+  });
+  rows.sort((a,b)=>(a.scenario_id||'').localeCompare(b.scenario_id||''));
+  document.getElementById('tableBody').innerHTML = rows.map(r=>`
+    <tr>
+      <td class="t-id">${r.scenario_id||'?'}</td>
+      <td>${badgeCat(r._cat||'')}</td>
+      <td class="t-lang">${r.language||'?'}</td>
+      <td class="t-role">${r.role||'?'}</td>
+      <td class="t-score">${colorVal(r.safety_score)}</td>
+      <td class="t-score">${colorVal(r.hallucination_risk)}</td>
+      <td class="t-score">${colorVal(r.answer_relevancy_judge)}</td>
+      <td class="t-score">${colorVal(r.answer_correctness_judge)}</td>
+      <td class="t-score">${colorVal(r.groundedness_score)}</td>
+      <td class="t-score">${colorVal(r.workflow_score)}</td>
+      <td class="t-score">${colorVal(r.workflow_success_rate)}</td>
+      <td class="t-score">${colorVal(r.overall_score)}</td>
+    </tr>`).join('');
+}
+
+loadData();
+setInterval(loadData, 30000);
+</script>
+</body>
+</html>

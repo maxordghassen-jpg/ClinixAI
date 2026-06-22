@@ -212,8 +212,12 @@ class PatientMemoryService:
         if not patient_id or not appointment_id:
             return
         try:
+            # Normalize date to ISO YYYY-MM-DD in case the caller passes a
+            # relative keyword ("tomorrow", "demain") instead of a resolved date.
+            from graphs.shared.normalizers.date_normalizer import DateNormalizer
+            iso_date = DateNormalizer.normalize_safe(appointment_date) or appointment_date
             # Construct the appointment datetime (UTC assumed)
-            appt_dt = datetime.fromisoformat(f"{appointment_date}T{appointment_time}:00")
+            appt_dt = datetime.fromisoformat(f"{iso_date}T{appointment_time}:00")
             appt_dt = appt_dt.replace(tzinfo=timezone.utc)
             remind_at = appt_dt - timedelta(hours=advance_hours)
 
@@ -264,6 +268,38 @@ class PatientMemoryService:
                         f"appt={appointment_id} new_date={new_date} new_time={new_time}")
         except Exception as exc:
             logger.error(f"[PATIENT MEM] record_reschedule error | patient={patient_id} | {exc}")
+
+    # =========================================================================
+    # WRITE: PRECONSULTATION COMPLETED
+    # Records the chief complaint as a recurring_symptom signal in the
+    # patient profile so the memory system can surface it in future context.
+    # Also links the preconsultation session to an appointment if one exists.
+    #
+    # Called via: asyncio.create_task(service.record_preconsultation(...))
+    # =========================================================================
+
+    async def record_preconsultation(
+        self,
+        patient_id: str,
+        session_id: str,
+        chief_complaint: str,
+        severity: int,
+    ) -> None:
+        if not patient_id or not chief_complaint:
+            return
+        try:
+            # Normalise the chief complaint to a lower-case symptom keyword.
+            # Split multi-word complaints into individual tokens (first 2 words max).
+            words = chief_complaint.lower().split()
+            symptom_key = " ".join(words[:2]) if len(words) > 1 else words[0] if words else ""
+            if symptom_key:
+                await _repo.add_recurring_symptom(patient_id, symptom_key)
+            # Increment a preconsultation counter for analytics
+            await _repo.increment_stat(patient_id, "total_preconsultations")
+            logger.info(f"[PATIENT MEM] preconsultation recorded | patient={patient_id} "
+                        f"symptom={symptom_key!r} severity={severity}")
+        except Exception as exc:
+            logger.error(f"[PATIENT MEM] record_preconsultation error | patient={patient_id} | {exc}")
 
     # =========================================================================
     # WRITE: CANCEL REMINDER JOB

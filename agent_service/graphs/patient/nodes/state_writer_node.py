@@ -1,20 +1,29 @@
+"""
+Patient StateWriterNode — turn-end persistence.
+
+  1. Flush state.memory to Redis (existing behaviour, unchanged).
+  1b. If step=="completed", clear workflow-scoped Redis keys so stale
+      doctor/date/time/specialty/intent/preconsultation fields cannot leak
+      into the next turn within the 30-minute workflow-expiry window.
+  2. Fire async: MemoryExtractionService → user_memories in MongoDB.
+  3. Fire async: MemoryManager.save_workflow_snapshot → workflow_snapshots.
+  4. Fire async: MemoryManager.complete_workflow if terminal step reached.
+
+Rules 2-4 are fire-and-forget via asyncio.create_task. Zero latency on the hot path.
+"""
+
+import asyncio
 from typing import Any
 
+from app.memory.memory_manager import MemoryManager
 from app.memory.redis_memory import RedisMemory
+from app.services.memory_extraction_service import MemoryExtractionService
+from graphs.patient.services.workflow_cleanup_service import WorkflowCleanupService
 from graphs.shared.schemas import AgentState
 from graphs.shared.trace import trace
 
 
 def _has_meaningful_value(value: Any) -> bool:
-    """
-    Returns True only for values that should overwrite what is already in Redis.
-
-    Empty containers, None, and empty strings are skipped so that existing
-    Redis fields are never accidentally deleted by an in-flight state that
-    simply never touched those fields during the current turn.
-
-    Intentional removal must go through WorkflowCleanupService.delete_keys().
-    """
     if value is None:
         return False
     if isinstance(value, str) and value == "":
@@ -25,54 +34,70 @@ def _has_meaningful_value(value: Any) -> bool:
 
 
 class StateWriterNode:
-    """
-    Terminal graph node — the single authoritative Redis persistence point.
-
-    Every upstream node (IntentNode, WorkflowNode, ActionNode) may freely
-    mutate state.memory without touching Redis.  This node flushes the final
-    in-memory state to Redis exactly once per turn, after all logic has
-    completed.
-
-    Merge contract:
-    - Only fields with meaningful values are written.
-    - Writing is additive / protective: existing Redis fields are preserved
-      when the current turn did not produce a new value for them.
-    - ContextMerger inside RedisMemory.update() provides the final safety net
-      (None / "" in incoming are also ignored there).
-    - Intentional field deletion must go through WorkflowCleanupService.
-    """
 
     def __init__(self):
-        self.memory = RedisMemory()
+        self.redis     = RedisMemory()
+        self.manager   = MemoryManager()
+        self.extractor = MemoryExtractionService()
+        self.cleanup   = WorkflowCleanupService()
 
     async def run(self, state: AgentState) -> AgentState:
-        try:
-            safe_payload = {
-                key: value
-                for key, value in state.memory.items()
-                if _has_meaningful_value(value)
-            }
 
-            if safe_payload:
-                keys_written = list(safe_payload.keys())
+        # ── 1. Redis flush ────────────────────────────────────────────────────
+        safe_payload = {k: v for k, v in state.memory.items() if _has_meaningful_value(v)}
+        if safe_payload:
+            try:
                 trace("WRITER", state.session_id,
-                      f"persisting {len(keys_written)} field(s): {keys_written}")
+                      f"persisting {len(safe_payload)} field(s): {list(safe_payload.keys())}")
                 trace("WRITER", state.session_id,
-                      f"step={safe_payload.get('step')!r} | intent={safe_payload.get('intent')!r} "
-                      f"| doctor_id={safe_payload.get('doctor_id')} "
-                      f"| date={safe_payload.get('date')!r} | time={safe_payload.get('time')!r}")
+                      f"step={safe_payload.get('step')!r} | intent={safe_payload.get('intent')!r}")
+                await self.redis.update(state.session_id, safe_payload)
+                trace("WRITER", state.session_id, "Redis write complete")
+            except Exception as exc:
+                trace("WRITER", state.session_id, f"Redis ERROR: {exc}")
+        else:
+            trace("WRITER", state.session_id, "nothing to persist")
 
-                await self.memory.update(
-                    state.session_id,
-                    safe_payload,
+        # ── 1b. Workflow-completed cleanup ──────────────────────────────────────
+        # step=="completed" is the final persisted step for a finished
+        # booking/cancel/reschedule/reminder turn (set once, no further
+        # recursion). Wipe the workflow-scoped keys now so stale doctor_id,
+        # date, time, specialty, intent, workflow_started_at, etc. cannot be
+        # read back as live state on the next turn before the 30-min
+        # WorkflowGuardService expiry would otherwise clear them.
+        if safe_payload.get("step") == "completed":
+            try:
+                await self.cleanup.clear_workflow(state.session_id)
+                trace("WRITER", state.session_id, "step=completed -> workflow keys cleared")
+            except Exception as exc:
+                trace("WRITER", state.session_id, f"cleanup ERROR: {exc}")
+
+        # ── 2-4. Async long-term writes (fire and forget) ─────────────────────
+        user_id = state.patient_id
+        if user_id:
+            asyncio.create_task(
+                self.extractor.extract_and_store(
+                    user_id=user_id,
+                    role="patient",
+                    message=state.message,
+                    response=state.response or "",
+                    session_memory=state.memory,
+                    profile=state.profile,
+                )
+            )
+
+            step = state.memory.get("step", "")
+            if step:
+                asyncio.create_task(
+                    self.manager.save_workflow_snapshot(
+                        user_id=user_id,
+                        role="patient",
+                        session_memory=state.memory,
+                    )
                 )
 
-                trace("WRITER", state.session_id, "Redis write complete")
-            else:
-                trace("WRITER", state.session_id,
-                      "nothing to persist — all fields empty")
-
-        except Exception as exc:
-            trace("WRITER", state.session_id, f"ERROR: {exc}")
+            if self.manager.is_terminal_step(step):
+                asyncio.create_task(self.manager.complete_workflow(user_id))
+                trace("WRITER", state.session_id, f"workflow completion queued | step={step!r}")
 
         return state

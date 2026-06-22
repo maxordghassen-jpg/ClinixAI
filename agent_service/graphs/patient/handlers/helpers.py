@@ -44,6 +44,21 @@ _RECOVERY_KEYWORDS: tuple[tuple[frozenset[str], int], ...] = (
                 "آخر", "طبيب", "تغيير", "جديد"}), 3),
 )
 
+# Keyword groups for the "no availability configured" recovery menu
+# (choices 1/2/3 — choose another doctor / search nearby / same specialty).
+# Ordered by priority: evaluated top-to-bottom, first match wins.
+_AVAILABILITY_RECOVERY_KEYWORDS: tuple[tuple[frozenset[str], int], ...] = (
+    # Choice 2 — search nearby doctors (check before "doctor" keywords to avoid overlap)
+    (frozenset({"nearby", "near", "closest", "around", "proche", "alentour", "قريب", "مجاور", "حول"}), 2),
+    # Choice 3 — search same specialty
+    (frozenset({"specialty", "speciality", "specialist", "same",
+                "spécialité", "même", "تخصص", "نفس"}), 3),
+    # Choice 1 — choose another doctor
+    (frozenset({"different", "another", "other", "change", "new", "doctor",
+                "autre", "médecin", "docteur", "changer", "nouveau",
+                "آخر", "طبيب", "تغيير", "جديد"}), 1),
+)
+
 
 def _is_availability_exploration(message: str) -> bool:
     """True when the message is asking to SEE availability rather than providing a value."""

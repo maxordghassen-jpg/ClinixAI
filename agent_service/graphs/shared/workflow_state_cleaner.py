@@ -105,6 +105,11 @@ FULL_BOOKING_STATE_FIELDS: frozenset[str] = frozenset({
     "booking_candidate",
     # Recovery state (set when booking fails with no available slots)
     "recovery_context",
+    # Workflow timer — cleared so WorkflowNode's timer-init block assigns a
+    # fresh timestamp for the new workflow that is starting after this reset.
+    # Without this, the stale booking timestamp survives into the new workflow
+    # and triggers a false WorkflowGuardService.is_expired() on the next turn.
+    "workflow_started_at",
 })
 
 # New date/time being collected during an active reschedule.
@@ -117,6 +122,31 @@ RESCHEDULE_FIELDS: frozenset[str] = frozenset({
 ALL_APPOINTMENT_FIELDS: frozenset[str] = (
     APPOINTMENT_SELECTION_FIELDS | RESCHEDULE_FIELDS
 )
+
+# State produced by the geo search workflow.
+# Cleared when a new incompatible intent (booking, doctor_search, …) arrives
+# while the user is viewing geo results (step=selecting_place).
+# Preserves doctor_id/doctor_name if the user just supplied them in the same
+# message (e.g. "Book with Dr X") — MemoryNode has already written those by
+# the time WorkflowNode runs.
+GEO_STATE_FIELDS: frozenset[str] = frozenset({
+    "place_results",  # search result list displayed to the user
+    "place_type",     # e.g. "pharmacy", "clinic" — set during geo flow
+    "query",          # geo search term (e.g. "Dentiste") — stale once the
+                       # geo flow ends; would otherwise outrank a freshly
+                       # extracted doctor_name in _searching_doctors'
+                       # "query or doctor_name or specialty" resolution
+})
+
+# State accumulated during the symptom questionnaire workflow.
+# Cleared when the user hard-pivots to a different workflow mid-questionnaire.
+PRECONSULTATION_FIELDS: frozenset[str] = frozenset({
+    "symptom_chief_complaint",
+    "symptom_duration",
+    "symptom_severity",
+    "symptom_associated",
+    "preconsultation_done",
+})
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
@@ -268,6 +298,49 @@ class WorkflowStateCleaner:
             ALL_APPOINTMENT_FIELDS,
             session_id,
             context="all_appointment_state",
+        )
+
+    @staticmethod
+    def clear_geo_state(
+        memory: dict,
+        session_id: str = "",
+    ) -> list[str]:
+        """
+        Clear geo search state for a cross-workflow reset.
+
+        Used by WorkflowNode when a booking/doctor_search/management intent
+        arrives while the geo workflow is active (step=selecting_place or
+        step=searching_places).
+
+        Deliberately does NOT clear doctor_id/doctor_name: if the user just
+        said "Book with Dr X, ID: doc-001" those fields were already written
+        by MemoryNode and must survive into the new booking routing.
+        Returns the list of cleared keys for Redis deletion and logging.
+        """
+        return WorkflowStateCleaner._clear_fields(
+            memory,
+            GEO_STATE_FIELDS,
+            session_id,
+            context="geo_state",
+        )
+
+    @staticmethod
+    def clear_preconsultation_state(
+        memory: dict,
+        session_id: str = "",
+    ) -> list[str]:
+        """
+        Clear symptom questionnaire state for a cross-workflow reset.
+
+        Used by WorkflowNode when a booking/doctor_search/management intent
+        arrives while the preconsultation questionnaire is active.
+        Returns the list of cleared keys for Redis deletion and logging.
+        """
+        return WorkflowStateCleaner._clear_fields(
+            memory,
+            PRECONSULTATION_FIELDS,
+            session_id,
+            context="preconsultation_state",
         )
 
     # ── Internal ──────────────────────────────────────────────────────────────

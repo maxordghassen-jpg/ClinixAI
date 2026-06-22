@@ -6,3 +6,15 @@ pydantic-settings
 python-dotenv
 dateparser
 motor
+python-jose[cryptography]
+redis
+groq
+
+# Semantic memory — multilingual embeddings (EN/FR/AR)
+# paraphrase-multilingual-MiniLM-L12-v2: 384-dim, cross-lingual semantic space
+# Install: pip install sentence-transformers
+# Note: pulls torch (~2 GB). For lightweight alternative: pip install fastembed
+sentence-transformers
+
+# Optional: OpenAI embeddings provider (set EMBEDDING_PROVIDER=openai in .env)
+# openai

@@ -27,7 +27,7 @@ class RedisMemory:
     ) -> dict[str, Any]:
 
         data = await self.redis.get(
-            f"session:{session_id}"
+            f"{session_id}:memory"
         )
 
         if not data:
@@ -49,7 +49,7 @@ class RedisMemory:
         )
 
         await self.redis.set(
-            f"session:{session_id}",
+            f"{session_id}:memory",
             json.dumps(current),
             ex=self.ttl,
         )
@@ -62,7 +62,7 @@ class RedisMemory:
     ) -> None:
 
         await self.redis.delete(
-            f"session:{session_id}"
+            f"{session_id}:memory"
         )
 
     async def delete_keys(
@@ -76,7 +76,7 @@ class RedisMemory:
             current.pop(key, None)
 
         await self.redis.set(
-            f"session:{session_id}",
+            f"{session_id}:memory",
             json.dumps(current),
             ex=self.ttl,
         )

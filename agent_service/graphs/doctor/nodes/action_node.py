@@ -1,5 +1,6 @@
 from graphs.doctor.handlers.appointments_handler import AppointmentsHandler
 from graphs.doctor.handlers.availability_handler import AvailabilityHandler
+from graphs.doctor.handlers.report_handler import ReportHandler
 from graphs.shared.schemas import AgentState
 from graphs.shared.trace import trace
 
@@ -8,6 +9,7 @@ class ActionNode:
     def __init__(self) -> None:
         self._appointments = AppointmentsHandler()
         self._availability = AvailabilityHandler()
+        self._reports      = ReportHandler()
 
     async def run(self, state: AgentState) -> AgentState:
         tool = state.intent.tool if state.intent else "unknown"
@@ -17,6 +19,8 @@ class ActionNode:
             state.tool_result = await self._appointments.handle(state)
         elif tool == "availability":
             state.tool_result = await self._availability.handle(state)
+        elif tool == "report":
+            state.tool_result = await self._reports.handle(state)
         else:
             trace("DOCTOR-ACTION", state.session_id, f"unrecognised tool: {tool!r}")
             state.tool_result = {"message": "I could not find a tool for this request."}

@@ -15,12 +15,159 @@ from graphs.shared.schemas import AgentState
 from graphs.shared.trace import trace
 from graphs.shared.booking_responses import BookingResponses
 from graphs.shared.workflow_state_cleaner import WorkflowStateCleaner
+from graphs.shared.normalizers.specialty_normalizer import SpecialtyNormalizer
 
 # Steps this handler owns — used by ActionNode to route.
 STEPS: frozenset[str] = frozenset({
     "searching_places",
     "selecting_place",
 })
+
+# ── Geo-service collection mapping ────────────────────────────────────────────
+# Maps query keywords and place_type values to the MongoDB collection names used
+# by geo_service /api/nearby.  Ordering matters: more specific entries first.
+
+_GEO_CATEGORY: dict[str, str] = {
+    "pharmacies":        "pharmacies",
+    "pharmacy":          "pharmacies",
+    "pharmacie":         "pharmacies",
+    "صيدلية":            "pharmacies",
+    "clinics":           "clinics",
+    "clinic":            "clinics",
+    "clinique":          "clinics",
+    "hospitals":         "hospitals",
+    "hospital":          "hospitals",
+    "hôpital":           "hospitals",
+    "hopital":           "hospitals",
+    "مستشفى":            "hospitals",
+    "analysis_labs":     "analysis_labs",
+    "analysis_lab":      "analysis_labs",
+    "laboratory":        "analysis_labs",
+    "labo":              "analysis_labs",
+    "nurses":            "nurses",
+    "nurse":             "nurses",
+    "infirmier":         "nurses",
+    "physiotherapists":  "physiotherapists",
+    "physiotherapist":   "physiotherapists",
+    "kinésithérapeute":  "physiotherapists",
+    "parapharmacies":    "parapharmacies",
+    "parapharmacy":      "parapharmacies",
+    "parapharmacie":     "parapharmacies",
+}
+
+
+def _infer_geo_category(query: str, place_type: str | None = None) -> str:
+    """Return the geo_service MongoDB collection name for this query/place_type."""
+    for text in (place_type or "", query or ""):
+        lower = text.lower()
+        for keyword, collection in _GEO_CATEGORY.items():
+            if keyword in lower:
+                return collection
+    return "doctors"
+
+
+# ── Coordinate extraction ─────────────────────────────────────────────────────
+# The geo_service /api/nearby and /api/search/manual endpoints return each
+# result with this structure:
+#   {
+#       "id": "...", "name": "...",
+#       "coordinates": {"lat": 36.xxx, "lng": 10.xxx},  ← PRIMARY FORMAT
+#       ...
+#   }
+#
+# Legacy / raw formats also supported:
+#   • Top-level  lat / latitude / lng / longitude / lon
+#   • Google Places: geometry.location.lat / lng
+#
+# _extract_lat / _extract_lng try all three tiers in order so a single
+# function covers every provider that may be wired in the future.
+
+def _extract_lat(p: dict) -> float | None:
+    """Extract latitude, checking all known geo_service response formats."""
+    # Tier 1 — top-level scalar (OpenStreetMap, some custom providers)
+    for key in ("lat", "latitude"):
+        v = p.get(key)
+        if v is not None:
+            try:
+                fv = float(v)
+                if fv != 0.0:
+                    return fv
+            except (TypeError, ValueError):
+                pass
+
+    # Tier 2 — ClinixAI geo_service: {"coordinates": {"lat": ..., "lng": ...}}
+    coords = p.get("coordinates")
+    if isinstance(coords, dict):
+        for key in ("lat", "latitude"):
+            v = coords.get(key)
+            if v is not None:
+                try:
+                    fv = float(v)
+                    if fv != 0.0:
+                        return fv
+                except (TypeError, ValueError):
+                    pass
+
+    # Tier 3 — Google Places raw API: geometry.location.lat
+    geo = p.get("geometry") or {}
+    if isinstance(geo, dict):
+        loc = geo.get("location") or {}
+        if isinstance(loc, dict):
+            for key in ("lat", "latitude"):
+                v = loc.get(key)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if fv != 0.0:
+                            return fv
+                    except (TypeError, ValueError):
+                        pass
+
+    return None
+
+
+def _extract_lng(p: dict) -> float | None:
+    """Extract longitude, checking all known geo_service response formats."""
+    # Tier 1 — top-level scalar
+    for key in ("lng", "longitude", "lon"):
+        v = p.get(key)
+        if v is not None:
+            try:
+                fv = float(v)
+                if fv != 0.0:
+                    return fv
+            except (TypeError, ValueError):
+                pass
+
+    # Tier 2 — ClinixAI geo_service: {"coordinates": {"lat": ..., "lng": ...}}
+    coords = p.get("coordinates")
+    if isinstance(coords, dict):
+        for key in ("lng", "longitude", "lon"):
+            v = coords.get(key)
+            if v is not None:
+                try:
+                    fv = float(v)
+                    if fv != 0.0:
+                        return fv
+                except (TypeError, ValueError):
+                    pass
+
+    # Tier 3 — Google Places raw API: geometry.location.lng
+    geo = p.get("geometry") or {}
+    if isinstance(geo, dict):
+        loc = geo.get("location") or {}
+        if isinstance(loc, dict):
+            for key in ("lng", "longitude", "lon"):
+                v = loc.get(key)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if fv != 0.0:
+                            return fv
+                    except (TypeError, ValueError):
+                        pass
+
+    return None
 
 
 class GeoHandler:
@@ -57,7 +204,14 @@ class GeoHandler:
         language = memory.get("language", "english")
 
         query = memory.get("query") or memory.get("specialty")
-        trace("ACTION", session_id, f"searching places | query={query!r}")
+        place_type = memory.get("place_type")
+        trace("ACTION", session_id, f"searching places | query={query!r} | place_type={place_type!r}")
+        trace("ACTION", session_id,
+              f"[DEBUG-SPECIALTY] geo query resolution | "
+              f"memory.query={memory.get('query')!r} "
+              f"memory.specialty={memory.get('specialty')!r} "
+              f"memory.recommended_specialty={memory.get('recommended_specialty')!r} "
+              f"-> resolved query={query!r}")
 
         # Same freshness-aware stale cleanup as searching_doctors.
         fresh = getattr(state, "extracted_this_turn", set())
@@ -71,8 +225,41 @@ class GeoHandler:
             trace("ACTION", session_id,
                   f"stale scheduling fields cleared + synced to Redis: {cleared}")
 
+        # Infer which geo_service MongoDB collection to query from the natural
+        # language query / place_type so results come from the right dataset.
+        category = _infer_geo_category(query or "", place_type)
+        trace("ACTION", session_id, f"geo_category={category!r}")
+
         try:
-            results = await self.tools.search_places(query)
+            if state.latitude is not None and state.longitude is not None:
+                trace("ACTION", session_id,
+                      f"nearby search | lat={state.latitude} lng={state.longitude} "
+                      f"query={query!r} category={category!r}")
+
+                payload: dict[str, Any] = {
+                    "latitude":  state.latitude,
+                    "longitude": state.longitude,
+                    "radius":    5000,
+                    "category":  category,
+                }
+                # For doctor searches, pass the specialty as a filter so the
+                # geo_service applies a MongoDB regex match within the collection.
+                if category == "doctors" and query:
+                    fr_specialty = SpecialtyNormalizer.normalize(query)
+                    payload["specialty"] = fr_specialty
+                    if fr_specialty != query:
+                        trace("ACTION", session_id,
+                              f"specialty normalized: {query!r} → {fr_specialty!r}")
+
+                results = await self.tools.search_nearby_places(payload)
+            else:
+                trace("ACTION", session_id, f"text search (no coords) | query={query!r}")
+                # Translate specialty to French for text search too
+                search_query = SpecialtyNormalizer.normalize(query) if query else query
+                if search_query != query:
+                    trace("ACTION", session_id,
+                          f"text search specialty normalized: {query!r} → {search_query!r}")
+                results = await self.tools.search_places(search_query)
         except Exception as exc:
             trace("ACTION", session_id, f"geo search ERROR: {exc}")
             state.response = "Place search is temporarily unavailable. Please try again."
@@ -94,13 +281,52 @@ class GeoHandler:
         memory["place_results"] = place_results
         memory["step"] = "selecting_place"
 
-        # Checkpoint so the list survives until the user picks one.
         await self.memory.update(
             state.session_id,
             {"place_results": place_results, "step": "selecting_place"},
         )
         trace("ACTION", session_id,
               f"geo results stored: {len(place_results)} place(s) | step=selecting_place")
+
+        # ── Build map pins with real coordinates ─────────────────────────────
+        # _extract_lat / _extract_lng probe all three coordinate formats so the
+        # geo_service's {"coordinates": {"lat": ..., "lng": ...}} structure is
+        # handled correctly regardless of the original provider format.
+        pins: list[dict] = []
+        for p in top:
+            lat = _extract_lat(p)
+            lng = _extract_lng(p)
+            pin = {
+                "id":          p.get("id"),
+                "name":        p.get("name"),
+                "address":     p.get("address"),
+                "specialty":   p.get("specialty") or query,
+                "lat":         lat,
+                "lng":         lng,
+                "phone":       p.get("phone_number") or p.get("phone"),
+                "rating":      p.get("rating"),
+                "is_open_now": p.get("is_open_now"),
+            }
+            pins.append(pin)
+            # Per-place coordinate log — visible in agent_service console.
+            print(
+                f"[PLACE] {p.get('name')!r:40s} | "
+                f"lat={lat!r:10} lng={lng!r:10} | "
+                f"addr={str(p.get('address', ''))[:40]!r}"
+            )
+
+        coords_resolved = sum(1 for p in pins if p["lat"] is not None and p["lng"] is not None)
+        trace("ACTION", session_id,
+              f"ui_action=open_map | {len(pins)} pin(s) | "
+              f"coords_resolved={coords_resolved}/{len(pins)}")
+
+        state.ui_action = "open_map"
+        state.ui_payload = {
+            "specialty":  memory.get("specialty") or query,
+            "query":      query,
+            "place_type": place_type,
+            "pins":       pins,
+        }
 
         formatted = [
             f"{i}. {p['name']} - {p['address']}"
@@ -137,8 +363,7 @@ class GeoHandler:
               f"selecting_place | index={selected_index} | "
               f"{len(place_results)} available")
 
-        if not selected_index:
-            # User said "yes" or something non-numeric — ask them to pick.
+        if selected_index is None:
             state.response = BookingResponses.get(language, "doctor_prompt")
             return state
 
@@ -154,11 +379,6 @@ class GeoHandler:
         trace("ACTION", session_id,
               f"place selected: id={memory['doctor_id']} name={memory['doctor_name']!r}")
 
-        # Remove geo result list from memory; clear only derived scheduling
-        # cache fields.  date/time are preserved — stale values were already
-        # removed by searching_places at the start of this workflow, so any
-        # date/time present now are valid (user supplied them in the same
-        # geo search message, e.g. "find a dentist tomorrow at 9").
         memory.pop("place_results", None)
         cleared = WorkflowStateCleaner.clear_stale_scheduling(
             memory,
@@ -171,7 +391,6 @@ class GeoHandler:
               f"cleared from Redis: {cleared} | "
               f"post-cleanup: date={memory.get('date')!r} time={memory.get('time')!r}")
 
-        # Route based on what is already known.
         if not memory.get("date"):
             memory["step"] = "awaiting_date"
             trace("ACTION", session_id,

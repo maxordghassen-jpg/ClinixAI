@@ -308,14 +308,19 @@ class AvailabilityService:
         # Fetch appointments
         # -----------------------------
 
-        async with httpx.AsyncClient() as client:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
 
-            response = await client.get(
-                f"{self.appointment_url}/appointments/date/{doctor_id}",
-                params={
-                    "date": date
-                },
-            )
+                response = await client.get(
+                    f"{self.appointment_url}/appointments/date/{doctor_id}",
+                    params={
+                        "date": date
+                    },
+                )
+        except httpx.HTTPError:
+            # appointment_service unreachable or timed out — return
+            # candidate slots as-is rather than failing the whole request.
+            return candidate_slots
 
         # -----------------------------
         # If appointment service fails,
@@ -325,7 +330,13 @@ class AvailabilityService:
         if response.status_code != 200:
             return candidate_slots
 
-        appointments = response.json()
+        try:
+            appointments = response.json()
+        except ValueError:
+            return candidate_slots
+
+        if not isinstance(appointments, list):
+            return candidate_slots
 
         # -----------------------------
         # Booked times
@@ -333,11 +344,12 @@ class AvailabilityService:
 
         booked_times = {
 
-            appointment["time"]
+            appointment.get("time")
 
             for appointment in appointments
 
-            if appointment["status"]
+            if isinstance(appointment, dict)
+            and appointment.get("status")
             not in [
                 "cancelled",
                 "rejected",

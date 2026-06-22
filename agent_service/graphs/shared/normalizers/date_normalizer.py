@@ -13,6 +13,7 @@ class DateNormalizer:
         "tomorrow": 1,
         "yesterday": -1,
         "the day after tomorrow": 2,
+        "after tomorrow": 2,
         # French
         "aujourd'hui": 0,
         "demain": 1,
@@ -26,6 +27,10 @@ class DateNormalizer:
         "أمس": -1,
         "بعد غد": 2,
         "بعد غداً": 2,
+        # Weeks
+        "next week": 7,
+        "semaine prochaine": 7,
+        "الأسبوع القادم": 7,
     }
 
     # Matches YYYY-MM-DD (already ISO)
@@ -60,6 +65,15 @@ class DateNormalizer:
         if eu_match:
             day, month, year = eu_match.groups()
             return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+
+        # Clean up 'next'/'prochain' before feeding to dateparser, which struggles with it.
+        # PREFER_DATES_FROM="future" will automatically push the date to next week.
+        for prefix in ["next ", "prochain "]:
+            if stripped.lower().startswith(prefix):
+                stripped = stripped[len(prefix):]
+        for suffix in [" prochain", " next"]:
+            if stripped.lower().endswith(suffix):
+                stripped = stripped[:-len(suffix)]
 
         # Tier 4 — dateparser (handles day names, relative phrases, multilingual)
         parsed = dateparser.parse(

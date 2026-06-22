@@ -228,6 +228,7 @@ class AppointmentsHandler:
         memory["selected_appointment_time"]        = selected["time"]
         # Consumed — clear so it doesn't bleed into the next turn
         memory.pop("selected_appointment_index", None)
+        await self.memory.delete_keys(state.session_id, ["selected_appointment_index"])
 
         trace("ACTION", session_id,
               f"appointment resolved: index={selected_index} → "
@@ -476,6 +477,66 @@ class AppointmentsHandler:
         language = memory.get("language", "english")
 
         if memory.get("new_time"):
+            # MODE 2 — soft pre-validation, mirrors booking's _awaiting_time:
+            # confirm new_time is an actual free slot for new_date BEFORE
+            # recursing into ready_to_reschedule.
+            doctor_id = (
+                memory.get("selected_appointment_doctor_id")
+                or memory.get("doctor_id")
+            )
+            new_date = memory.get("new_date")
+            proposed = memory.get("new_time")
+
+            if doctor_id and new_date:
+                try:
+                    norm_proposed = TimeNormalizer.normalize(proposed)
+                    free_slots = await self.availability_service.get_free_slots(
+                        doctor_id=doctor_id, date=new_date,
+                    )
+                    valid_slots = [
+                        s for s in free_slots
+                        if isinstance(s, dict) and s.get("start")
+                    ]
+
+                    if not valid_slots:
+                        memory.pop("new_date", None)
+                        memory.pop("new_time", None)
+                        await self.memory.delete_keys(state.session_id, ["new_date", "new_time"])
+                        memory["step"] = "awaiting_reschedule_date"
+                        state.response = BookingResponses.get(
+                            language, "reschedule_no_slots_for_date", date=new_date,
+                        )
+                        trace("ACTION", session_id,
+                              f"MODE 2: free_slots empty for doctor={doctor_id!r} date={new_date!r} "
+                              f"→ awaiting_reschedule_date")
+                        return state
+
+                    matched = SlotFormatter.match_typed_time(valid_slots, norm_proposed)
+                    if not matched:
+                        memory["suggested_slots"] = valid_slots
+                        memory["step"]            = "awaiting_reschedule_slot_selection"
+                        memory.pop("new_time", None)
+                        await self.memory.delete_keys(state.session_id, ["new_time"])
+                        slots_list = SlotFormatter.numbered_list(valid_slots, language)
+                        state.response = BookingResponses.get(
+                            language, "reschedule_slot_unavailable_with_alternatives",
+                            requested_time=SlotFormatter.to_12h(proposed),
+                            slots=slots_list,
+                        )
+                        trace("ACTION", session_id,
+                              f"MODE 2: {proposed!r} not in available slots | "
+                              f"{len(valid_slots)} alternative(s) → awaiting_reschedule_slot_selection")
+                        return state
+
+                    if matched != proposed:
+                        memory["new_time"] = matched
+                        trace("ACTION", session_id,
+                              f"MODE 2: new_time canonicalized {proposed!r} → {matched!r}")
+                except Exception as exc:
+                    trace("ACTION", session_id,
+                          f"MODE 2 pre-validation error: {exc!r} — "
+                          f"proceeding to ready_to_reschedule without pre-validation")
+
             memory["step"] = "ready_to_reschedule"
             trace("ACTION", session_id,
                   f"awaiting_reschedule_time — new_time={memory['new_time']!r} → ready_to_reschedule")

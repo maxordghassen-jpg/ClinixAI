@@ -17,9 +17,5 @@ APPOINTMENT_ACTIONS = {
 SCHEDULE_VIEW_ACTIONS = {"daily_schedule", "weekly_schedule"}
 
 
-def is_appointment_action(action: str) -> bool:
-    return action in APPOINTMENT_ACTIONS
-
-
 def is_schedule_view(action: str) -> bool:
     return action in SCHEDULE_VIEW_ACTIONS

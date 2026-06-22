@@ -1,0 +1,22 @@
+fastapi
+uvicorn
+httpx
+pydantic
+pydantic-settings
+python-dotenv
+groq
+
+# MongoDB async driver
+motor
+pymongo
+
+# BERTScore — contextual semantic similarity (EN/FR/AR)
+bert-score
+sentence-transformers
+
+# ROUGE — summary / concise-output evaluation
+rouge-score
+
+# BLEU — multilingual translation quality
+sacrebleu
+scikit-learn

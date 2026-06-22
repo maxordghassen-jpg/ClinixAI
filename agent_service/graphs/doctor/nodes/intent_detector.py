@@ -1,6 +1,7 @@
 from graphs.doctor.shared.prompts import DOCTOR_INTENT_PROMPT
 from graphs.doctor.tools.appointments.prompts import APPOINTMENTS_PROMPT
 from graphs.doctor.tools.availability.prompts import AVAILABILITY_PROMPT
+from graphs.doctor.tools.reports.prompts import REPORTS_PROMPT
 from graphs.shared.llm_router import LLMRouter
 from graphs.shared.schemas import AgentState, IntentResult
 
@@ -10,7 +11,7 @@ class IntentDetector:
         self.llm = LLMRouter()
 
     async def run(self, state: AgentState) -> AgentState:
-        prompt = f"{DOCTOR_INTENT_PROMPT}\n{APPOINTMENTS_PROMPT}\n{AVAILABILITY_PROMPT}"
+        prompt = f"{DOCTOR_INTENT_PROMPT}\n{APPOINTMENTS_PROMPT}\n{AVAILABILITY_PROMPT}\n{REPORTS_PROMPT}"
         result = await self.llm.complete_json(prompt, state.message)
         state.intent = IntentResult(**result) if result else self._fallback(state.message)
         return state

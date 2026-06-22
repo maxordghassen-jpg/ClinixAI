@@ -25,4 +25,10 @@ def trace(node: str, session_id: str, message: str) -> None:
         return
     tag = f"[{node:<8}]"
     short_session = (session_id or "?")[:12]
-    print(f"{tag} session={short_session} | {message}")
+    line = f"{tag} session={short_session} | {message}"
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        # Windows cp1252 terminals can't print characters like →, é, etc.
+        # Encode as ASCII, replacing non-ASCII with '?', then print safely.
+        print(line.encode("ascii", errors="replace").decode("ascii"))

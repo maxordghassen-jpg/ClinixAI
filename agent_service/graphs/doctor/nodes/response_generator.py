@@ -1,6 +1,7 @@
 from typing import Any
 
 from graphs.doctor.tools.appointments.intents import is_schedule_view
+from graphs.shared.trace import trace
 from graphs.shared.formatting import (
     appointment_date_context,
     appointment_header,
@@ -64,6 +65,8 @@ class ResponseGenerator:
     ) -> str:
         if "message" in item:
             return item["message"]
+        if "report" in item:
+            return self._format_report(item["report"], language)
         if "results" in item:
             return self._format_medical_places(item, language)
         if "status" in item and "time" in item:
@@ -83,6 +86,10 @@ class ResponseGenerator:
             if state.role == "patient"
             else patient_display_name(item)
         )
+
+        if state.role == "doctor":
+            trace("DOCTOR-APPT", state.session_id,
+                  f"patient_id={item.get('patient_id')!r} resolved_name={doctor_or_patient!r}")
 
         date_value = format_date(item.get("date"), language)
         time_value = item.get("time", "--:--")
@@ -142,6 +149,47 @@ class ResponseGenerator:
         if language == "ar":
             return f"لديك {count} فترات متاحة:"
         return f"You have {count} available slots:"
+
+    def _format_report(self, report: dict[str, Any], language: str) -> str:
+        ps = report.get("patient_snapshot", {})
+        pc = report.get("preconsultation_snapshot", {})
+
+        name      = ps.get("name") or "Unknown Patient"
+        complaint = pc.get("chief_complaint") or "—"
+        severity  = pc.get("severity")
+        duration  = pc.get("duration") or "—"
+        urgency   = (pc.get("urgency") or "unknown").upper()
+        symptoms  = pc.get("associated_symptoms") or []
+        summary   = report.get("ai_summary", "")
+
+        sep = "─" * 42
+
+        if language == "fr":
+            lines = [
+                f"📋 Rapport pré-consultation — {name}",
+                sep,
+                f"Motif : {complaint}" + (f"  (sévérité {severity}/10)" if severity is not None else ""),
+                f"Durée : {duration}",
+                f"Urgence : {urgency}",
+            ]
+            if symptoms:
+                lines.append(f"Symptômes : {', '.join(symptoms)}")
+            if summary:
+                lines += ["", "Résumé clinique IA :", summary]
+        else:
+            lines = [
+                f"📋 Pre-Consultation Report — {name}",
+                sep,
+                f"Chief Complaint: {complaint}" + (f"  (severity {severity}/10)" if severity is not None else ""),
+                f"Duration: {duration}",
+                f"Urgency: {urgency}",
+            ]
+            if symptoms:
+                lines.append(f"Associated Symptoms: {', '.join(symptoms)}")
+            if summary:
+                lines += ["", "AI Clinical Summary:", summary]
+
+        return "\n".join(lines)
 
     def _format_medical_places(self, item: dict[str, Any], language: str) -> str:
         results = item.get("results", [])

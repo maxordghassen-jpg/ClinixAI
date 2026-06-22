@@ -79,6 +79,22 @@ class BookingResponses:
                 "3. Choose a different doctor\n"
                 "4. Find nearby doctors"
             ),
+            # ── Guided recovery (no availability schedule configured) ─────────
+            "no_availability_options": (
+                "This doctor currently has no availability configured.\n\n"
+                "What would you like to do?\n\n"
+                "1. Choose another doctor\n"
+                "2. Search nearby doctors\n"
+                "3. Search same specialty"
+            ),
+            "no_availability_choice_invalid": (
+                "I didn't catch that. Please choose:\n\n"
+                "1. Choose another doctor\n"
+                "2. Search nearby doctors\n"
+                "3. Search same specialty"
+            ),
+            "no_availability_marker": " (no availability configured)",
+            "preferred_doctor_marker": " ⭐ Preferred Doctor",
         },
         "french": {
             # ── Booking ──────────────────────────────────────────────────────
@@ -158,6 +174,22 @@ class BookingResponses:
                 "3. Choisir un autre médecin\n"
                 "4. Trouver des médecins à proximité"
             ),
+            # ── Récupération guidée (aucune disponibilité configurée) ─────────
+            "no_availability_options": (
+                "Ce médecin n'a actuellement aucune disponibilité configurée.\n\n"
+                "Que souhaitez-vous faire ?\n\n"
+                "1. Choisir un autre médecin\n"
+                "2. Rechercher des médecins à proximité\n"
+                "3. Rechercher la même spécialité"
+            ),
+            "no_availability_choice_invalid": (
+                "Je n'ai pas compris. Veuillez choisir :\n\n"
+                "1. Choisir un autre médecin\n"
+                "2. Rechercher des médecins à proximité\n"
+                "3. Rechercher la même spécialité"
+            ),
+            "no_availability_marker": " (aucune disponibilité configurée)",
+            "preferred_doctor_marker": " ⭐ Médecin préféré",
         },
         "arabic": {
             # ── Booking ──────────────────────────────────────────────────────
@@ -237,6 +269,22 @@ class BookingResponses:
                 "3. اختيار طبيب آخر\n"
                 "4. البحث عن أطباء قريبين"
             ),
+            # ── الاسترداد الموجّه (لا توجد إتاحة مهيأة) ─────────────────────
+            "no_availability_options": (
+                "لا تتوفر لهذا الطبيب أي إتاحة مهيأة حالياً.\n\n"
+                "ماذا تريد أن تفعل؟\n\n"
+                "1. اختيار طبيب آخر\n"
+                "2. البحث عن أطباء قريبين\n"
+                "3. البحث عن نفس التخصص"
+            ),
+            "no_availability_choice_invalid": (
+                "لم أفهم اختيارك. يرجى الاختيار:\n\n"
+                "1. اختيار طبيب آخر\n"
+                "2. البحث عن أطباء قريبين\n"
+                "3. البحث عن نفس التخصص"
+            ),
+            "no_availability_marker": " (لا توجد إتاحة مهيأة)",
+            "preferred_doctor_marker": " ⭐ الطبيب المفضل",
         },
     }
 

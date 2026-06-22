@@ -46,11 +46,14 @@ def format_place_result(place: Dict, distance: float, place_lat: float, place_ln
     opening_hours = place.get('opening_hours', {})
     weekday_text = opening_hours.get('weekday_text', []) if isinstance(opening_hours, dict) else []
     is_open_now = opening_hours.get('open_now') if isinstance(opening_hours, dict) else place.get('is_open_now')
-    
+
+    name = place.get('name', '(unnamed)')
+    print(f"[PLACE] {name!r:40s} | lat={place_lat!r:10} lng={place_lng!r:10} | {round(distance, 2)} km")
+
     return {
         'id': str(place['_id']),
         'place_id': place.get('place_id'),
-        'name': place.get('name'),
+        'name': name,
         'address': place.get('address'),
         'coordinates': {
             'lat': place_lat,
@@ -367,6 +370,18 @@ def manual_search():
                     }
                 }
             ]
+
+            # For doctor searches, also match the query against the
+            # specialty field (e.g. query="Cardiologue" should find
+            # doctors whose specialty is "Cardiologue" even if their
+            # name/address/types don't contain that word).
+            if category == 'doctors':
+                search_filter['$or'].append({
+                    'specialty': {
+                        '$regex': normalized_search,
+                        '$options': 'i'
+                    }
+                })
         # Filtres additionnels
         if specialty and category == 'doctors':
             search_filter['specialty'] = {'$regex': specialty, '$options': 'i'}

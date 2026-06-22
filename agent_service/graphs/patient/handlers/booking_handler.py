@@ -7,11 +7,13 @@ slot-conflict recovery flow.
 Steps owned:
     searching_doctors, awaiting_specialty, doctor_selected,
     ready_to_book, awaiting_date, awaiting_time,
-    awaiting_slot_selection, awaiting_recovery_choice
+    awaiting_slot_selection, awaiting_recovery_choice,
+    awaiting_availability_recovery
 """
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime as _dt, date as _date_cls
 from typing import Any, Callable, Coroutine
 
 from graphs.shared.schemas import AgentState
@@ -20,12 +22,33 @@ from graphs.shared.booking_responses import BookingResponses
 from graphs.shared.workflow_state_cleaner import WorkflowStateCleaner
 from graphs.shared.slot_formatter import SlotFormatter
 from graphs.shared.normalizers.time_normalizer import TimeNormalizer
+from graphs.shared.normalizers.date_normalizer import DateNormalizer
 
 from graphs.patient.handlers.helpers import (
     _AFFIRMATIVE_WORDS,
     _is_availability_exploration,
     _RECOVERY_KEYWORDS,
+    _AVAILABILITY_RECOVERY_KEYWORDS,
 )
+from graphs.patient.handlers.symptom_handler import get_preconsult_question
+
+
+def _format_relative_date(date_str: str) -> str:
+    """Convert YYYY-MM-DD to 'today', 'tomorrow', weekday name, or 'Month DD'."""
+    try:
+        d = _dt.strptime(date_str, "%Y-%m-%d").date()
+        today = _date_cls.today()
+        diff = (d - today).days
+        if diff == 0:
+            return "today"
+        if diff == 1:
+            return "tomorrow"
+        if 2 <= diff <= 6:
+            return d.strftime("%A")
+        return d.strftime("%B %d").lstrip("0").replace(" 0", " ")
+    except Exception:
+        return date_str
+
 
 # Steps this handler owns — used by ActionNode to route.
 STEPS: frozenset[str] = frozenset({
@@ -37,6 +60,7 @@ STEPS: frozenset[str] = frozenset({
     "awaiting_time",
     "awaiting_slot_selection",
     "awaiting_recovery_choice",
+    "awaiting_availability_recovery",
 })
 
 
@@ -84,6 +108,8 @@ class BookingHandler:
             return await self._awaiting_slot_selection(state)
         if step == "awaiting_recovery_choice":
             return await self._awaiting_recovery_choice(state)
+        if step == "awaiting_availability_recovery":
+            return await self._awaiting_availability_recovery(state)
         return state
 
     async def handle_direct_recovery(self, state: AgentState) -> AgentState:
@@ -105,11 +131,19 @@ class BookingHandler:
                 selected = doctors[position]
                 memory["doctor_id"] = str(selected.get("id"))
                 memory["doctor_name"] = selected.get("name")
+                memory["specialty"] = selected.get("specialty") or memory.get("specialty")
                 trace("ACTION", session_id,
                       f"recovered doctor: {memory['doctor_name']!r}")
 
         if memory.get("doctor_id") and memory.get("date") and memory.get("time"):
-            memory["step"] = "ready_to_book"
+            memory["step"] = (
+                "ready_to_book"
+                if memory.get("preconsultation_done")
+                else "collecting_chief_complaint_booking"
+            )
+            if memory["step"] == "collecting_chief_complaint_booking":
+                state.response = get_preconsult_question(memory["step"], language)
+                return state
             return await self._run(state)
 
         # Personalization: suggest usual doctor if profile has one
@@ -128,6 +162,41 @@ class BookingHandler:
         return state
 
     # =========================================================================
+    # AVAILABILITY GATE
+    # Requirement #2: if the selected doctor has no availability schedule
+    # configured at all (GET /availability/{doctor_id} returns []), do not
+    # continue toward awaiting_date/awaiting_time/ready_to_book. Instead set
+    # the guided "no availability configured" response + recovery menu.
+    # =========================================================================
+
+    async def _gate_on_availability(self, state: AgentState, doctor_id: str) -> bool:
+        """Returns True (and sets state.response/step) if the gate fired."""
+        memory = state.memory
+        session_id = state.session_id
+        language = memory.get("language", "english")
+
+        try:
+            has_schedule = await self.availability_service.has_availability_schedule(doctor_id)
+        except Exception as exc:
+            trace("ACTION", session_id, f"availability-schedule check ERROR: {exc!r}")
+            has_schedule = True
+
+        if has_schedule:
+            return False
+
+        memory["recovery_context"] = {
+            "doctor_id":   doctor_id,
+            "doctor_name": memory.get("doctor_name", ""),
+            "specialty":   memory.get("specialty", ""),
+        }
+        memory["step"] = "awaiting_availability_recovery"
+        state.response = BookingResponses.get(language, "no_availability_options")
+        trace("ACTION", session_id,
+              f"no availability schedule for doctor={doctor_id!r} → "
+              f"awaiting_availability_recovery")
+        return True
+
+    # =========================================================================
     # SEARCH DOCTORS
     # =========================================================================
 
@@ -135,16 +204,31 @@ class BookingHandler:
         memory = state.memory
         session_id = state.session_id
         language = memory.get("language", "english")
-
+        urgency = memory.get("urgency")
+        
         # Resolution priority: explicit query → doctor name (entity resolution) → specialty
-        query = memory.get("query") or memory.get("doctor_name") or memory.get("specialty")
-        trace("ACTION", session_id, f"searching doctors | query={query!r}")
-
-        # Freshness-aware stale cleanup: remove scheduling fields the user
-        # did NOT supply in this message (e.g. stale date/time from a prior
-        # session).  Fields present in extracted_this_turn are kept — they
-        # were just parsed and are authoritative.
+        query = ( memory.get("doctor_name") or memory.get("query") or memory.get("specialty"))
+        trace("ACTION", session_id,
+                f"[BOOKING_DEBUG] query={memory.get('query')!r} "
+                f"doctor_name={memory.get('doctor_name')!r} "
+                f"specialty={memory.get('specialty')!r} "
+                f"resolved={query!r}"
+            )
+        # Only show urgency preamble if the user signalled it THIS turn (not a stale value)
         fresh = getattr(state, "extracted_this_turn", set())
+        if "urgency" not in fresh:
+            urgency = None
+        trace("ACTION", session_id,
+              f"searching doctors | query={query!r} | urgency={urgency!r}")
+        trace("ACTION", session_id,
+              f"[DEBUG-SPECIALTY] doctor query resolution | "
+              f"memory.query={memory.get('query')!r} "
+              f"memory.doctor_name={memory.get('doctor_name')!r} "
+              f"memory.specialty={memory.get('specialty')!r} "
+              f"memory.recommended_specialty={memory.get('recommended_specialty')!r} "
+              f"-> resolved query={query!r}")
+
+        # Freshness-aware stale cleanup
         trace("ACTION", session_id,
               f"searching_doctors | extracted_this_turn={sorted(fresh)} | "
               f"memory before cleanup: date={memory.get('date')!r} "
@@ -169,28 +253,42 @@ class BookingHandler:
 
         trace("ACTION", session_id, f"found {len(doctors)} doctor(s)")
 
-        doctor_results = [
-            {"id": d.get("id"), "name": d.get("name"), "address": d.get("address")}
-            for d in doctors[:5]
-        ]
-        memory["doctor_results"] = doctor_results
-        memory["step"] = "selecting_doctor"
-
-        # Checkpoint — persist before waiting for user selection
-        await self.memory.update(
-            state.session_id,
-            {"doctor_results": doctor_results, "step": "selecting_doctor"},
-        )
-        trace("ACTION", session_id,
-              f"checkpoint saved: {len(doctor_results)} doctors, step=selecting_doctor")
-
+        # ── Single doctor: auto-select and proceed ───────────────────────────
         if len(doctors) == 1:
             doctor = doctors[0]
             memory["doctor_id"] = str(doctor.get("id"))
             memory["doctor_name"] = doctor.get("name")
+            memory["specialty"] = doctor.get("specialty") or memory.get("specialty")
             memory["intent"] = "booking"
             trace("ACTION", session_id,
                   f"single doctor auto-selected: {memory['doctor_name']!r}")
+
+            # A single-match auto-select is a doctor-selection event just like
+            # _doctor_selected() — clear the same leftover search artifacts
+            # (query/doctor_results/selected_doctor_index from a PREVIOUS
+            # multi-result search) so they don't get re-persisted by
+            # StateWriter/save_workflow_snapshot and outrank a fresh
+            # doctor_name on a future turn.
+            trace("ACTION", session_id,
+                  f"[DEBUG_AUTO_SELECT] pre-cleanup | query={memory.get('query')!r} "
+                  f"doctor_results={'present' if memory.get('doctor_results') else 'absent'} "
+                  f"specialty={memory.get('specialty')!r} step={memory.get('step')!r}")
+            stale_keys = [
+                k for k in ("query", "doctor_results", "selected_doctor_index")
+                if memory.pop(k, None) is not None
+            ]
+            if stale_keys:
+                await self.memory.delete_keys(state.session_id, stale_keys)
+                trace("ACTION", session_id,
+                      f"cleared stale search artifacts: {stale_keys}")
+            trace("ACTION", session_id,
+                  f"[DEBUG_AUTO_SELECT] post-cleanup | query={memory.get('query')!r} "
+                  f"doctor_results={'present' if memory.get('doctor_results') else 'absent'} "
+                  f"specialty={memory.get('specialty')!r} step={memory.get('step')!r}")
+
+            if await self._gate_on_availability(state, memory["doctor_id"]):
+                return state
+
             if not memory.get("date"):
                 memory["step"] = "awaiting_date"
                 state.response = (
@@ -204,19 +302,179 @@ class BookingHandler:
                     + "\n\n" + BookingResponses.get(language, "ask_time")
                 )
             else:
-                memory["step"] = "ready_to_book"
+                memory["step"] = (
+                    "ready_to_book"
+                    if memory.get("preconsultation_done")
+                    else "collecting_chief_complaint_booking"
+                )
+                if memory["step"] == "collecting_chief_complaint_booking":
+                    state.response = get_preconsult_question(memory["step"], language)
+                    return state
                 return await self._run(state)
             return state
 
-        formatted = [
-            f"{i}. {d.get('name')} - {d.get('address')}"
-            for i, d in enumerate(doctors[:5], start=1)
+        # ── Build preferred_doctor_ids before candidate selection ────────────
+        # Must happen before the [:5] cut so that preferred doctors outside
+        # the natural top-5 geo order can be injected into the candidate pool.
+        preferred_doctor_ids: set[str] = set()
+        for m in (state.long_term_memories or []):
+            _key = m.get("key", "")
+            if (_key == "last_booked_doctor" or _key.startswith("doctor_affinity:")) \
+                    and m.get("confidence", 0) >= 0.6:
+                _val = m.get("value")
+                if isinstance(_val, dict) and _val.get("doctor_id"):
+                    preferred_doctor_ids.add(str(_val["doctor_id"]))
+
+        trace("ACTION", session_id,
+              f"[PREF-RANKING] total geo results={len(doctors)} "
+              f"| preferred_doctor_ids count={len(preferred_doctor_ids)}")
+
+        # ── Expand candidate pool: top-5 non-preferred + all preferred found ─
+        # Geo results arrive in MongoDB insertion order (no proximity sort).
+        # A preferred doctor can appear at any position. We collect the first 5
+        # non-preferred doctors as the base pool, then inject every preferred
+        # doctor found anywhere in the full geo result list.
+        _TOP_N = 5
+        _base: list[dict] = []       # first _TOP_N non-preferred from geo
+        _pref: list[dict] = []       # preferred doctors found in geo results
+        _seen: set[str] = set()
+        for _d in doctors:
+            _did = str(_d.get("id", ""))
+            if _did in _seen:
+                continue
+            _seen.add(_did)
+            if _did in preferred_doctor_ids:
+                _pref.append(_d)
+            elif len(_base) < _TOP_N:
+                _base.append(_d)
+
+        # Preferred first so availability fetch prioritises them; base fills
+        # the remaining slots. Deduplicate in case a preferred doctor also
+        # happened to be in the first 5 (shouldn't occur, but defensive).
+        _pref_ids = {str(p.get("id", "")) for p in _pref}
+        candidates = _pref + [d for d in _base if str(d.get("id", "")) not in _pref_ids]
+
+        trace("ACTION", session_id,
+              f"[PREF-RANKING] candidate pool size={len(candidates)} "
+              f"| preferred in pool={len(_pref)} ({[p.get('name') for p in _pref]}) "
+              f"| base (non-preferred) in pool={len(_base)}")
+
+        # Log geo position of each preferred doctor for observability
+        for _i, _d in enumerate(doctors, 1):
+            if str(_d.get("id", "")) in preferred_doctor_ids:
+                trace("ACTION", session_id,
+                      f"[PREF-RANKING] preferred doctor geo_pos={_i} "
+                      f"name={_d.get('name')!r} id={_d.get('id')!r} "
+                      f"in_pool={'yes' if str(_d.get('id','')) in _seen else 'skipped-dup'}")
+
+        # ── Fetch earliest availability for all candidates in parallel ───────
+        async def _earliest(
+            doc: dict,
+        ) -> tuple[dict, str | None, str | None]:
+            doc_id = str(doc.get("id") or "")
+            if not doc_id:
+                return doc, None, None
+            try:
+                next_date = await self.next_available.find_next_date(doc_id)
+                if not next_date:
+                    return doc, None, None
+                slots = await self.availability_service.get_free_slots(
+                    doctor_id=doc_id, date=next_date,
+                )
+                valid = [s for s in slots if isinstance(s, dict) and s.get("start")]
+                if not valid:
+                    return doc, None, None
+                earliest_time = min(valid, key=lambda s: s["start"])["start"]
+                return doc, next_date, earliest_time
+            except Exception as exc:
+                trace("ACTION", session_id,
+                      f"availability fetch for {doc_id!r}: {exc!r}")
+                return doc, None, None
+
+        avail_results = await asyncio.gather(*(_earliest(d) for d in candidates))
+
+        # ── Rank: preferred first, then by earliest availability date/time ───
+        ranked = sorted(
+            [(d, nd, et) for d, nd, et in avail_results if nd and et],
+            key=lambda x: (0 if str(x[0].get("id")) in preferred_doctor_ids else 1, x[1], x[2]),
+        )
+        _boosted = preferred_doctor_ids & {str(d.get("id")) for d, _, _ in avail_results}
+        trace("ACTION", session_id,
+              f"[PREF-RANKING] ranked={len(ranked)} of {len(candidates)} candidates "
+              f"| preferred_boost applied to={_boosted} "
+              f"| final order={[d.get('name') for d, _, _ in ranked]}")
+
+        # ── Requirement #1: flag candidates with no availability schedule ────
+        # Doctors in `ranked` returned a confirmed free slot, so they
+        # definitely have a configured schedule. For the rest, check the
+        # doctor's weekly template directly (GET /availability/{doctor_id}) —
+        # an empty template is distinct from "no slot in the near term".
+        ranked_ids = {str(d.get("id")) for d, _, _ in ranked}
+        unranked = [d for d, nd, _ in avail_results if nd is None and str(d.get("id")) not in ranked_ids]
+
+        async def _has_schedule(doc: dict) -> tuple[str, bool]:
+            doc_id = str(doc.get("id") or "")
+            if not doc_id:
+                return doc_id, True
+            try:
+                return doc_id, await self.availability_service.has_availability_schedule(doc_id)
+            except Exception as exc:
+                trace("ACTION", session_id,
+                      f"availability-schedule check for {doc_id!r}: {exc!r}")
+                return doc_id, True
+
+        has_avail_map: dict[str, bool] = {doc_id: True for doc_id in ranked_ids}
+        if unranked:
+            schedule_results = await asyncio.gather(*(_has_schedule(d) for d in unranked))
+            has_avail_map.update(dict(schedule_results))
+
+        # Recommendation list is ranking-only — no pre-filled date/time.
+        # _doctor_selected() (unchanged) finds no pre_filled_date/pre_filled_time
+        # on the selected doctor and falls through to its existing
+        # "if not memory.get('date'): step = awaiting_date" branch.
+        from_preconsult = bool(memory.get("recommended_specialty"))
+
+        # Build doctor_results — ranked order when available, fall back to candidates.
+        # Cap at _TOP_N so that adding preferred doctors never grows the displayed
+        # list beyond the expected 5-entry limit.
+        source = ([d for d, _, _ in ranked] if ranked else candidates)[:_TOP_N]
+        doctor_results = [
+            {
+                "id": d.get("id"),
+                "name": d.get("name"),
+                "address": d.get("address"),
+                "specialty": d.get("specialty"),
+                "has_availability": has_avail_map.get(str(d.get("id")), True),
+            }
+            for d in source
         ]
+
+        memory["doctor_results"] = doctor_results
+        memory["step"] = "selecting_doctor"
+        await self.memory.update(
+            state.session_id,
+            {"doctor_results": doctor_results, "step": "selecting_doctor"},
+        )
+        trace("ACTION", session_id,
+              f"checkpoint saved: {len(doctor_results)} doctors, step=selecting_doctor "
+              f"| from_preconsult={from_preconsult}")
+
+        # ── Numbered doctor list (no slot/date/time text) ───────────────────
+        formatted = []
+        for i, d in enumerate(source, start=1):
+            line = f"{i}. {d.get('name')}"
+            if not has_avail_map.get(str(d.get("id")), True):
+                line += BookingResponses.get(language, "no_availability_marker")
+            if str(d.get("id")) in preferred_doctor_ids:
+                line += BookingResponses.get(language, "preferred_doctor_marker")
+            formatted.append(line)
         state.response = (
             BookingResponses.get(language, "doctors_found")
             + "\n\n" + "\n".join(formatted)
             + "\n\n" + BookingResponses.get(language, "doctor_prompt")
         )
+        trace("ACTION", session_id, f"doctor list: {len(source)} doctor(s)")
+
         return state
 
     # =========================================================================
@@ -280,18 +538,53 @@ class BookingHandler:
         doctor = doctors[position]
         memory["doctor_id"] = str(doctor.get("id"))
         memory["doctor_name"] = doctor.get("name")
+        memory["specialty"] = doctor.get("specialty") or memory.get("specialty")
         memory["intent"] = "booking"
         trace("ACTION", session_id,
               f"doctor confirmed: id={memory['doctor_id']} name={memory['doctor_name']!r}")
 
+        # Preconsultation handoff: the user was asked "Would you like to book?"
+        # and confirmed. They have not yet expressed any date or time preference.
+        # Always collect date → time → availability → book in the correct sequence.
+        #
+        # Two sources can inject stale date/time even after the cross-workflow reset:
+        #   (a) pre_filled_date/time stored in doctor_results from a previous
+        #       proactive recommendation (applied below for normal booking flows)
+        #   (b) values loaded from a MongoDB pending_workflow snapshot that carried
+        #       over from a prior session
+        # Explicitly wiping them here is the only reliable guard.
+        from_preconsult = bool(memory.get("recommended_specialty"))
+        if from_preconsult:
+            stale = [
+                f for f in ("date", "time", "normalized_date", "normalized_time")
+                if memory.pop(f, None) is not None
+            ]
+            if stale:
+                await self.memory.delete_keys(state.session_id, stale)
+                trace("ACTION", session_id,
+                      f"preconsultation handoff — cleared stale scheduling fields: {stale}")
+
+        # Pick up pre-filled slot from proactive recommendation.
+        # When _searching_doctors ranked doctors by earliest availability it
+        # embedded the slot info in doctor_results.  Applying it here lets the
+        # user confirm "1" and go straight to ready_to_book without being
+        # re-asked for a date/time they were already shown.
+        # Skipped for preconsultation handoffs — date/time must be collected fresh.
+        if not from_preconsult:
+            if doctor.get("pre_filled_date") and not memory.get("date"):
+                memory["date"] = doctor["pre_filled_date"]
+                trace("ACTION", session_id,
+                      f"pre-filled date from recommendation: {memory['date']!r}")
+            if doctor.get("pre_filled_time") and not memory.get("time"):
+                memory["time"] = doctor["pre_filled_time"]
+                trace("ACTION", session_id,
+                      f"pre-filled time from recommendation: {memory['time']!r}")
+
         # ── Scheduling cache reset ───────────────────────────────────────────
-        # Preserve date/time: any stale cross-session values were already
-        # cleared by searching_doctors at the start of this workflow.
-        # date/time in memory at this point are valid — either extracted
-        # earlier in this session ("I want a dentist tomorrow at 9") or
-        # absent.  Clear only the derived/cached scheduling fields (normalized
-        # forms, slot lists, etc.) because those always belong to the old
-        # doctor and must be regenerated for the newly selected one.
+        # Preserve date/time for direct booking ("I want a dentist tomorrow at 9").
+        # For preconsultation flows date/time were already cleared above, so this
+        # only removes derived/cached fields (normalized forms, slot lists, etc.)
+        # that belong to the old doctor and must be regenerated for the new one.
         cleared = WorkflowStateCleaner.clear_stale_scheduling(
             memory,
             fresh_fields={"date", "time"},  # treat raw date/time as always valid here
@@ -302,22 +595,44 @@ class BookingHandler:
             trace("ACTION", session_id,
                   f"cache fields cleared for new doctor: {cleared}")
 
+        trace("ACTION", session_id,
+              f"[DEBUG_DOCTOR_SELECTED] pre-cleanup | query={memory.get('query')!r} "
+              f"specialty={memory.get('specialty')!r} doctor_name={memory.get('doctor_name')!r} "
+              f"step={memory.get('step')!r}")
+
         # Clear doctor selection artifacts — consumed after resolution.
         # Leaving selected_doctor_index in Redis risks it being mis-read
         # as a slot index inside awaiting_slot_selection (both fields are
         # checked as fallbacks there).  doctor_results is a large payload
         # that has no use after the doctor is confirmed.
+        #
+        # "query" is the leftover search term (e.g. "dentist") that produced
+        # doctor_results. doctor_id/doctor_name/specialty are now confirmed
+        # for THIS doctor, so a stale query must not remain — _searching_doctors
+        # resolves "query or doctor_name or specialty", and a stale query would
+        # outrank a fresh doctor_name on a future turn.
         memory.pop("doctor_results", None)
         memory.pop("selected_doctor_index", None)
-        await self.memory.delete_keys(
-            state.session_id, ["doctor_results", "selected_doctor_index"]
-        )
+        delete_targets = ["doctor_results", "selected_doctor_index"]
+        if memory.pop("query", None) is not None:
+            delete_targets.append("query")
+        await self.memory.delete_keys(state.session_id, delete_targets)
         trace("ACTION", session_id,
-              "cleared doctor selection artifacts: doctor_results, selected_doctor_index")
+              f"cleared doctor selection artifacts: {delete_targets}")
+
+        trace("ACTION", session_id,
+              f"[DEBUG_DOCTOR_SELECTED] post-cleanup | query={memory.get('query')!r} "
+              f"specialty={memory.get('specialty')!r} doctor_name={memory.get('doctor_name')!r} "
+              f"step={memory.get('step')!r}")
 
         trace("ACTION", session_id,
               f"post-cleanup: date={memory.get('date')!r} "
               f"time={memory.get('time')!r}")
+
+        # Requirement #2: do not continue toward date/time collection if this
+        # doctor has no availability schedule configured at all.
+        if await self._gate_on_availability(state, memory["doctor_id"]):
+            return state
 
         # Route based on what is already known — skip collection steps
         # when the user provided date/time in the same message.
@@ -340,7 +655,14 @@ class BookingHandler:
                 + "\n\n" + BookingResponses.get(language, "ask_time")
             )
         else:
-            memory["step"] = "ready_to_book"
+            memory["step"] = (
+                "ready_to_book"
+                if memory.get("preconsultation_done")
+                else "collecting_chief_complaint_booking"
+            )
+            if memory["step"] == "collecting_chief_complaint_booking":
+                state.response = get_preconsult_question(memory["step"], language)
+                return state
             trace("ACTION", session_id,
                   f"doctor_selected → ready_to_book "
                   f"(date={memory['date']!r} time={memory['time']!r} both known) | "
@@ -383,13 +705,17 @@ class BookingHandler:
             # ── Fire-and-forget: record booking in patient profile ──────
             advance_hours = state.profile.get("reminder_preferences", {}).get("advance_hours", 24)
             channel = state.profile.get("reminder_preferences", {}).get("channel", "app")
+            # Resolve relative date keywords ("tomorrow", "demain") to ISO YYYY-MM-DD
+            # before writing to MongoDB. memory["date"] may still hold raw user input
+            # when the booking service normalizes it internally.
+            iso_date = DateNormalizer.normalize_safe(date) or date or ""
             asyncio.create_task(self.patient_memory.record_booking(
                 patient_id=patient_id or "",
                 appointment_id=appointment_id,
                 doctor_id=doctor_id or "",
                 doctor_name=memory.get("doctor_name", ""),
                 specialty=memory.get("specialty", ""),
-                date=date or "",
+                date=iso_date,
                 time=booking_time or "",
             ))
             if appointment_id:
@@ -397,7 +723,7 @@ class BookingHandler:
                     appointment_id=appointment_id,
                     patient_id=patient_id or "",
                     doctor_name=memory.get("doctor_name", ""),
-                    appointment_date=date or "",
+                    appointment_date=iso_date,
                     appointment_time=booking_time or "",
                     advance_hours=advance_hours,
                     channel=channel,
@@ -409,6 +735,16 @@ class BookingHandler:
                     asyncio.create_task(
                         self.patient_memory.update_language(patient_id, language)
                     )
+
+            # ── Fire-and-forget: generate pre-consultation report ──────
+            if appointment_id and patient_id and doctor_id:
+                from app.services.report_generation_service import generate_preconsultation_report
+                asyncio.create_task(generate_preconsultation_report(
+                    appointment_id=appointment_id,
+                    doctor_id=doctor_id or "",
+                    patient_id=patient_id or "",
+                    session_id=session_id,
+                ))
 
         except ValueError as exc:
             trace("ACTION", session_id, f"normalization error: {exc}")
@@ -600,6 +936,25 @@ class BookingHandler:
                     free_slots = await self.availability_service.get_free_slots(
                         doctor_id=doctor_id, date=date,
                     )
+
+                    if not free_slots:
+                        # Requirement #3: doctor has no availability configured
+                        # for this date — halt before attempting to book and
+                        # offer guided recovery instead of silently proceeding.
+                        memory["recovery_context"] = {
+                            "doctor_id":   doctor_id,
+                            "doctor_name": memory.get("doctor_name", ""),
+                            "specialty":   memory.get("specialty", ""),
+                        }
+                        memory["step"] = "awaiting_availability_recovery"
+                        memory.pop("time", None)
+                        await self.memory.delete_keys(state.session_id, ["time"])
+                        state.response = BookingResponses.get(language, "no_availability_options")
+                        trace("ACTION", session_id,
+                              f"MODE 2: free_slots empty for doctor={doctor_id!r} date={date!r} "
+                              f"→ awaiting_availability_recovery")
+                        return state
+
                     valid_slots = [
                         s for s in free_slots
                         if isinstance(s, dict) and s.get("start")
@@ -634,7 +989,14 @@ class BookingHandler:
                           f"MODE 2 pre-validation error: {exc!r} — "
                           f"proceeding to ready_to_book without pre-validation")
 
-            memory["step"] = "ready_to_book"
+            memory["step"] = (
+                "ready_to_book"
+                if memory.get("preconsultation_done")
+                else "collecting_chief_complaint_booking"
+            )
+            if memory["step"] == "collecting_chief_complaint_booking":
+                state.response = get_preconsult_question(memory["step"], language)
+                return state
             trace("ACTION", session_id,
                   f"awaiting_time — time={memory['time']!r} → recursing to ready_to_book")
             return await self._run(state)
@@ -737,6 +1099,17 @@ class BookingHandler:
 
         # ── No resolution — re-show options ───────────────────────────────
         if not resolved_time:
+            # An out-of-range index extracted THIS turn must not persist to
+            # Redis: _has_meaningful_value() treats a non-zero int as
+            # meaningful, so a stale index here would silently hijack
+            # Strategy 1 on a later turn where the user types a direct time.
+            if selected_index:
+                memory.pop("selected_appointment_index", None)
+                memory.pop("selected_doctor_index", None)
+                await self.memory.delete_keys(
+                    state.session_id,
+                    ["selected_appointment_index", "selected_doctor_index"],
+                )
             if suggested_slots:
                 slots_list = SlotFormatter.numbered_list(suggested_slots, language)
                 state.response = BookingResponses.get(
@@ -758,14 +1131,24 @@ class BookingHandler:
         memory.pop("suggested_slots", None)
         memory.pop("selected_appointment_index", None)
         memory.pop("selected_doctor_index", None)
-        await self.memory.delete_keys(state.session_id, ["suggested_slots"])
+        await self.memory.delete_keys(
+            state.session_id,
+            ["suggested_slots", "selected_appointment_index", "selected_doctor_index"],
+        )
 
         trace("ACTION", session_id,
               f"slot resolved: {resolved_time!r} | "
               f"display={SlotFormatter.to_12h(resolved_time)!r} | "
               f"step → ready_to_book")
 
-        memory["step"] = "ready_to_book"
+        memory["step"] = (
+            "ready_to_book"
+            if memory.get("preconsultation_done")
+            else "collecting_chief_complaint_booking"
+        )
+        if memory["step"] == "collecting_chief_complaint_booking":
+            state.response = get_preconsult_question(memory["step"], language)
+            return state
         return await self._run(state)
 
     # =========================================================================
@@ -939,5 +1322,88 @@ class BookingHandler:
             state.response = BookingResponses.get(language, "recovery_choice_invalid")
             trace("ACTION", session_id,
                   "recovery choice unrecognized — re-displaying menu")
+
+        return state
+
+    # =========================================================================
+    # AWAITING AVAILABILITY RECOVERY
+    # Entered when the selected doctor has no availability schedule
+    # configured at all (requirements #2/#3). Presents 3 guided options;
+    # resolves choice deterministically using index → keyword scan, no LLM.
+    # =========================================================================
+
+    async def _awaiting_availability_recovery(self, state: AgentState) -> AgentState:
+        memory = state.memory
+        session_id = state.session_id
+        language = memory.get("language", "english")
+
+        recovery_ctx = memory.get("recovery_context", {})
+        rc_specialty = recovery_ctx.get("specialty", memory.get("specialty", ""))
+
+        # ── Resolve user's choice ─────────────────────────────────────────
+        choice: int | None = None
+
+        raw_index = (
+            memory.get("selected_doctor_index")
+            or memory.get("selected_appointment_index")
+        )
+        if raw_index and 1 <= int(raw_index) <= 3:
+            choice = int(raw_index)
+            trace("ACTION", session_id,
+                  f"availability recovery: index selection → choice {choice}")
+        else:
+            msg_lower = state.message.lower()
+            for keywords, choice_num in _AVAILABILITY_RECOVERY_KEYWORDS:
+                if any(kw in msg_lower for kw in keywords):
+                    choice = choice_num
+                    trace("ACTION", session_id,
+                          f"availability recovery: keyword match → choice {choice_num}")
+                    break
+
+        trace("ACTION", session_id,
+              f"awaiting_availability_recovery | choice={choice!r} | "
+              f"specialty={rc_specialty!r}")
+
+        # ── Route to chosen recovery path ─────────────────────────────────
+
+        if choice in (1, 3):
+            # 1: choose another doctor / 3: search same specialty — both
+            # re-run the doctor search for the same specialty.
+            cleared = WorkflowStateCleaner.clear_full_booking_state(memory, session_id)
+            memory.pop("recovery_context", None)
+            cleared.append("recovery_context")
+            await self.memory.delete_keys(state.session_id, cleared)
+            if rc_specialty:
+                memory["specialty"] = rc_specialty
+                memory["step"] = "searching_doctors"
+            else:
+                memory["step"] = "awaiting_specialty"
+            trace("ACTION", session_id,
+                  f"availability recovery — choice {choice} | specialty={rc_specialty!r} | "
+                  f"step={memory['step']!r}")
+            return await self._run(state)
+
+        elif choice == 2:
+            # Search nearby doctors — transition to geo search flow
+            cleared = WorkflowStateCleaner.clear_full_booking_state(memory, session_id)
+            memory.pop("recovery_context", None)
+            cleared.append("recovery_context")
+            await self.memory.delete_keys(state.session_id, cleared)
+            memory["query"] = rc_specialty or "doctor"
+            memory["intent"] = "geo_search"
+            memory["step"] = "searching_places"
+            state.response = BookingResponses.get(
+                language, "recovery_searching_nearby",
+                specialty=rc_specialty or "doctor",
+            )
+            trace("ACTION", session_id,
+                  f"availability recovery — choice 2 (nearby) | query={memory['query']!r}")
+            return await self._run(state)
+
+        else:
+            # Unrecognized input — re-display the menu
+            state.response = BookingResponses.get(language, "no_availability_choice_invalid")
+            trace("ACTION", session_id,
+                  "availability recovery choice unrecognized — re-displaying menu")
 
         return state

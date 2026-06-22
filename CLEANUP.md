@@ -237,15 +237,15 @@ These files became dead when `ActionNode` replaced the old `ToolSelector → Exe
 ### Category B (after import verification)
 
 ```
-[ ] graphs/patient/mcp/client.py        — verify no external callers
-[ ] graphs/doctor/mcp/client.py         — verify no external callers
-[ ] graphs/shared/services/scheduling/http_client.py  — verify no callers
+[x] graphs/patient/mcp/client.py        — verify no external callers
+[x] graphs/doctor/mcp/client.py         — verify no external callers
+[x] graphs/shared/services/scheduling/http_client.py  — verify no callers
 ```
 
 ### Category C (after extended verification)
 
 ```
-[ ] app/memory/context_merger.py        — check test files and scripts
-[ ] graphs/doctor/tools/events/__init__.py
-[ ] graphs/doctor/tools/patients/__init__.py
+[x] app/memory/context_merger.py        — NOT DELETED: actively imported by redis_memory.py
+[x] graphs/doctor/tools/events/__init__.py
+[x] graphs/doctor/tools/patients/__init__.py
 ```

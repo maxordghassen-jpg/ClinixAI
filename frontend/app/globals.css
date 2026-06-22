@@ -1,26 +1,106 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ── Design tokens ───────────────────────────────────────── */
+@theme {
+  --color-primary:       #6366f1;
+  --color-primary-dark:  #4f46e5;
+  --color-primary-light: #818cf8;
+  --color-accent:        #14b8a6;
+  --color-accent-dark:   #0d9488;
+  --color-surface:       #ffffff;
+  --color-bg:            #f8fafc;
+  --color-border:        #e2e8f0;
+  --color-muted:         #94a3b8;
+  --color-text:          #0f172a;
+  --color-text-secondary:#64748b;
+
+  --color-confirmed: #10b981;
+  --color-pending:   #f59e0b;
+  --color-cancelled: #ef4444;
+  --color-rejected:  #ef4444;
+
+  --radius-card:  1.25rem;
+  --radius-btn:   0.75rem;
+  --radius-input: 0.625rem;
+
+  --shadow-card:   0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.06);
+  --shadow-panel:  0 8px 32px -4px rgb(0 0 0 / 0.12);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* ── Base ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+html { -webkit-font-smoothing: antialiased; }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* ── Scrollbar ───────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #cbd5e1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── FullCalendar overrides ──────────────────────────────── */
+.fc .fc-toolbar-title    { font-size: 1rem !important; font-weight: 600; }
+.fc .fc-button           { background: #6366f1 !important; border-color: #6366f1 !important; border-radius: 0.5rem !important; font-size: 0.75rem !important; padding: 0.25rem 0.75rem !important; }
+.fc .fc-button:hover     { background: #4f46e5 !important; }
+.fc .fc-button-active    { background: #4338ca !important; }
+.fc .fc-event            { border-radius: 0.375rem !important; font-size: 0.75rem !important; border: none !important; }
+.fc .fc-daygrid-event    { padding: 2px 4px !important; }
+.fc-theme-standard td,
+.fc-theme-standard th    { border-color: #e2e8f0 !important; }
+.fc .fc-scrollgrid       { border-color: #e2e8f0 !important; }
+.fc .fc-col-header-cell  { background: #f8fafc; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
+.fc .fc-daygrid-day-number { font-size: 0.75rem; color: #64748b; }
+.fc .fc-day-today        { background: #eef2ff !important; }
+
+/* ── Utility classes ─────────────────────────────────────── */
+.card {
+  background: #ffffff;
+  border-radius: 1.25rem;
+  border: 1px solid #e2e8f0;
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 0.2s ease;
+}
+.card:hover { box-shadow: var(--shadow-card-hover); }
+
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  background: #6366f1; color: white; border-radius: 0.75rem;
+  padding: 0.5rem 1.25rem; font-size: 0.875rem; font-weight: 500;
+  transition: background 0.15s, box-shadow 0.15s;
+  border: none; cursor: pointer;
+}
+.btn-primary:hover { background: #4f46e5; box-shadow: 0 4px 12px rgb(99 102 241 / 0.3); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  background: transparent; color: #64748b; border-radius: 0.75rem;
+  padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  border: 1px solid #e2e8f0; cursor: pointer;
+}
+.btn-ghost:hover { background: #f8fafc; color: #0f172a; }
+
+.input-base {
+  background: white; border: 1px solid #e2e8f0; border-radius: 0.625rem;
+  padding: 0.5rem 0.875rem; font-size: 0.875rem; color: #0f172a;
+  outline: none; transition: border-color 0.15s, box-shadow 0.15s; width: 100%;
+}
+.input-base:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgb(99 102 241 / 0.1); }
+.input-base::placeholder { color: #94a3b8; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-size: 0.6875rem; font-weight: 600; padding: 0.1875rem 0.625rem;
+  border-radius: 99px; letter-spacing: 0.02em;
 }

@@ -24,9 +24,13 @@ class AvailabilityHandler:
         # ── Template view actions ──────────────────────────────────────────────
 
         if action in {"view_available_slots", "view_today_availability", "view_tomorrow_availability"}:
-            day = resolve_day(action, entities)
+            if action == "view_tomorrow_availability":
+                target_date = "tomorrow"
+            else:
+                target_date = entities.get("date") or "today"
+            iso_date = DateNormalizer.normalize_safe(target_date) or DateNormalizer.normalize("today")
             return await self.tool_caller.get_availability(
-                f"/availability/{doctor_id}/{day}/free-slots"
+                f"/availability/{doctor_id}/{iso_date}/free-slots"
             )
 
         if action in {"view_availability", "view_week_availability", "view_next_week_availability"}:

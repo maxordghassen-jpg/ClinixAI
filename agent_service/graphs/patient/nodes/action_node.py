@@ -8,7 +8,8 @@ Routing table
 ─────────────
   BookingHandler     searching_doctors, awaiting_specialty, doctor_selected,
                      ready_to_book, awaiting_date, awaiting_time,
-                     awaiting_slot_selection, awaiting_recovery_choice
+                     awaiting_slot_selection, awaiting_recovery_choice,
+                     awaiting_availability_recovery
 
   AppointmentsHandler fetching_appointments, selecting_appointment,
                      confirming_reschedule, confirming_cancel,
@@ -38,6 +39,10 @@ from graphs.patient.handlers.appointments_handler import AppointmentsHandler
 from graphs.patient.handlers.appointments_handler import STEPS as APPOINTMENT_STEPS
 from graphs.patient.handlers.geo_handler import GeoHandler
 from graphs.patient.handlers.geo_handler import STEPS as GEO_STEPS
+from graphs.patient.handlers.availability_check_handler import AvailabilityCheckHandler
+from graphs.patient.handlers.availability_check_handler import STEPS as AVAIL_STEPS
+from graphs.patient.handlers.symptom_handler import SymptomCollectionHandler
+from graphs.patient.handlers.symptom_handler import STEPS as SYMPTOM_STEPS
 
 
 class ActionNode:
@@ -91,6 +96,12 @@ class ActionNode:
             responses=responses,
             run_fn=self.run,
         )
+        self._avail_check = AvailabilityCheckHandler(
+            availability_service=avail_service,
+            doctor_service=doctor_service,
+            redis_memory=redis_memory,
+        )
+        self._symptom = SymptomCollectionHandler(redis_memory=redis_memory)
 
     async def run(self, state: AgentState) -> AgentState:
         memory = state.memory
@@ -99,6 +110,15 @@ class ActionNode:
 
         trace("ACTION", session_id,
               f"executing step={step!r} | intent={memory.get('intent')!r}")
+
+        if step in SYMPTOM_STEPS:
+            state = await self._symptom.handle(state)
+            if step.endswith("_booking") and memory.get("step") == "ready_to_book":
+                return await self._booking.handle(state)
+            return state
+
+        if step in AVAIL_STEPS:
+            return await self._avail_check.handle(state)
 
         if step in BOOKING_STEPS:
             return await self._booking.handle(state)
